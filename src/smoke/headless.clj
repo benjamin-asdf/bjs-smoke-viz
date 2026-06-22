@@ -33,7 +33,7 @@
   ([steps path] (snap steps path nil))
   ([steps path overrides]
    (let [p  (merge scene/default-params overrides)
-         fl (reduce (fn [acc _] (step acc p)) (f/make-fluid scene/N) (range steps))]
+         fl (reduce (fn [acc _] (step acc p)) (scene/new-fluid p) (range steps))]
      (render! fl p path)
      {:path path :steps steps})))
 
@@ -42,7 +42,7 @@
   ([steps every prefix] (film steps every prefix nil))
   ([steps every prefix overrides]
    (let [p (merge scene/default-params overrides)]
-     (loop [fl (f/make-fluid scene/N) i 0 out []]
+     (loop [fl (scene/new-fluid p) i 0 out []]
        (if (>= i steps)
          out
          (let [fl  (step fl p)

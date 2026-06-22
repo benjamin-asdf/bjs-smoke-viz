@@ -26,7 +26,7 @@
 (defn setup []
   (q/frame-rate 60)
   (q/image-mode :corner)
-  (assoc (f/make-fluid scene/N)
+  (assoc (scene/new-fluid @params)
          :img    (q/create-image scene/W scene/W :rgb)
          :paused false))
 
@@ -40,7 +40,7 @@
           i (cell-of (q/mouse-x))
           j (cell-of (q/mouse-y))]
       (when (and (>= i 0) (< i n) (>= j 0) (< j n))
-        (let [^floats d  (:dens fl)
+        (let [^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
               ^floats fx (:fx fl)
               ^floats fy (:fy fl)
               dx (- (q/mouse-x) (q/pmouse-x))
@@ -49,7 +49,10 @@
             (let [ii (+ i oi) jj (+ j oj)]
               (when (and (>= ii 0) (< ii n) (>= jj 0) (< jj n))
                 (let [k (f/idx n ii jj)]
-                  (aset d  k (+ (aget d k) (float 0.5)))
+                  ;; paint a bright dollop of smoke (white) + a push
+                  (aset dr k (+ (aget dr k) (float 0.4)))
+                  (aset dg k (+ (aget dg k) (float 0.4)))
+                  (aset db k (+ (aget db k) (float 0.4)))
                   (aset fx k (+ (aget fx k) (float (* 3.0 dx))))
                   (aset fy k (+ (aget fy k) (float (* 3.0 dy)))))))))))))
 
@@ -72,7 +75,7 @@
 
 (defn key-pressed [state event]
   (case (:key event)
-    :r       (assoc (f/make-fluid scene/N) :img (:img state) :paused (:paused state))
+    :r       (assoc (scene/new-fluid @params) :img (:img state) :paused (:paused state))
     :space   (update state :paused not)
     state))
 

@@ -1,10 +1,11 @@
 # bjs-smoke-viz
 
-Real-time 2D smoke in Clojure — a **spectral (FFT) Stable-Fluids** solver with
-multiple moving coloured sources that mix additively, procedural noise-field
-wind, and configurable scene **themes**. Rendered with [Quil](http://quil.info/).
+Real-time generative smoke in Clojure: a **spectral (FFT) Stable-Fluids** solver,
+driven by a **Physarum** (slime-mould) agent layer, with additive colour mixing,
+a procedural noise-field wind, twinkling "stars", and switchable scene **themes**.
+Rendered with [Quil](http://quil.info/).
 
-![smoke](assets/rgb.gif)
+![slime](assets/slime.gif)
 
 ## Run
 
@@ -12,77 +13,73 @@ wind, and configurable scene **themes**. Rendered with [Quil](http://quil.info/)
 clj -M:run        # opens the window
 ```
 
-Drag the mouse to push smoke. `space` pauses, `r` resets.
+Drag the mouse to push/paint smoke. `space` pauses, `r` resets.
+
+## Themes (modes)
+
+A theme bundles a *mode* with its config — switch theme, switch the whole look
+(call `start!` after switching for a clean reset):
+
+| theme | what |
+|-------|------|
+| `:slime`   | **default** — Physarum agents emit the smoke: they sense the smoke *density* as their chemoattractant (density == trail) and deposit their colour; the fluid advects it into flowing coloured networks. |
+| `:jets`    | colored moving **sources** emit the smoke (Brownian drift + boids flocking), no Physarum. |
+| `:network` | the classic **white** Physarum network on its own trail map. |
+
+On top of any theme, **stars** spawn as persistent bright particles at
+high-density peaks — they drift with a small acceleration and twinkle white.
 
 ## Live coding
 
 ```bash
-clj -M:nrepl      # connect your editor, then tweak live:
+clj -M:nrepl      # connect your editor, then:
 ```
 
 ```clojure
 (require '[smoke.core :as sc])
-(sc/start!)                                   ; (re)launch the window
-(swap! sc/params assoc :theme :duet)          ; :rgb :duet :single
-(swap! sc/params assoc :wind 8 :noise-scale 3) ; gustier, finer wind
-(sc/save-frame! "/tmp/f.png")                  ; dump the current frame
+(sc/start!)                                  ; (re)launch  ·  (sc/start! :fullscreen true)
+(swap! sc/params assoc :theme :network)      ; :slime :jets :network  -> then (sc/start!)
+(swap! sc/params assoc :star-thresh 3.5)     ; rarer stars   ·  :stars false to disable
+(swap! sc/params assoc :wind 6 :blur-passes 1)
+(sc/save-frame! "/tmp/f.png")                ; dump the current frame
 ```
 
-Every knob lives in the `smoke.scene/default-params` map and is hot-swappable;
-the sketch handlers are `#'`vars so you can redefine functions live too.
+Knobs live in `smoke.scene/default-params`; handlers are `#'`vars so functions
+can be redefined live too.
 
 ## How it works
 
-Per frame the velocity field is advanced by Jos Stam's spectral method:
-
-```
-add force → self-advect (semi-Lagrangian) → FFT → diffuse + project → IFFT
-```
-
-The projection onto divergence-free (mass-conserving) flow is done **exactly** in
-Fourier space — for each wavevector **k**, remove the component of velocity
-parallel to **k**, and damp by `exp(-|k|²·dt·visc)` for viscosity. No iterative
-pressure solve, and no collocated-grid checkerboard. The FFT domain is periodic;
-an absorbing **sponge border** fades flow at the edges so it reads as walls.
-
-Density is carried in three colour channels (R/G/B), all advected on the shared
-velocity field, so overlapping coloured jets mix additively. Wind is a procedural
-noise flow-field, so the smoke gusts and swirls.
-
-### Layout
-
-| file | what |
-|------|------|
-| `src/smoke/fluid.clj`    | the spectral solver: `vel-step`, `advect-colors!`, FFT diffuse+project, sponge border, blur. |
-| `src/smoke/scene.clj`    | Quil-free scene: moving coloured sources, `themes`, noise wind, params, RGB renderer. |
-| `src/smoke/core.clj`     | Quil window, input, render loop, REPL helpers (`save-frame!`, `dens-stats`). |
-| `src/smoke/headless.clj` | render frames to PNG with no window (`snap`, `film`) — for tuning, stills, and GIFs. |
-
-### Themes
-
-A theme is a scene preset — a list of sources, each with a colour, emit rate,
-radius, and motion (`:static` / `:osc-x` / `:osc-y` / `:circle`). Add one by
-appending to `smoke.scene/themes`.
-
-## Roadmap
-
-- [ ] Physarum (slime-mould) growth layer coupled to the same velocity/density grid.
+- **Fluid** (`smoke.fluid`) — Jos Stam's spectral *Stable Fluids*: `add force →
+  self-advect → FFT → diffuse+project → IFFT`. The projection onto
+  divergence-free flow is exact in Fourier space (remove the component of each
+  wavevector parallel to **k**), so there's no iterative solver and no
+  collocated-grid checkerboard. The domain is periodic; an absorbing sponge
+  border fades flow at the edges. Density is carried in **R/G/B channels** so
+  colours mix additively.
+- **Physarum** (`smoke.physarum`) — agents sense a field at 3 forward sensors,
+  steer toward the strongest, move (dragged by the fluid wind), and deposit. In
+  `:slime` they sense the smoke density and deposit colour; in `:network` they
+  use a separate white trail that diffuses + decays (Jones 2010).
+- **Boids** (`smoke.boids`) — in `:jets`, the handful of sources flock
+  (separation / alignment / cohesion) so the emitters drift in loose coordination.
+- **Wind** — a procedural noise flow-field force, so the smoke gusts and swirls.
+- **Stars** — persistent particles spawned at density peaks, drifting and
+  flashing white via a time lerp (rendered as bright colour discs).
+- **Headless** (`smoke.headless`) — render frames to PNG with no window
+  (`snap`, `film`); used for tuning, stills, and the GIFs here.
 
 ## References
 
-**Algorithm**
 - Jos Stam, *Stable Fluids*, SIGGRAPH 1999 — the spectral/FFT method used here.
-- Jos Stam, *Real-Time Fluid Dynamics for Games*, GDC 2003 — the grid-based primer.
-- R. Fedkiw, J. Stam, H. Jensen, *Visual Simulation of Smoke*, SIGGRAPH 2001 — buoyancy & vorticity.
+- R. Fedkiw, J. Stam, H. Jensen, *Visual Simulation of Smoke*, SIGGRAPH 2001.
+- Jeff Jones, *Characteristics of Pattern Formation and Evolution in Approximations
+  of Physarum Transport Networks*, Artificial Life 2010 — the slime-mould model.
+- Craig Reynolds, *Flocks, Herds, and Schools: A Distributed Behavioral Model*,
+  SIGGRAPH 1987 — boids.
+- Reference FFT Stable-Fluids ports: [daichi-ishida](https://github.com/daichi-ishida/Stable-Fluids),
+  [richardbenstead](https://github.com/richardbenstead/Stable-Fluids).
 
-**Reference implementations** (C++/FFTW, the basis for this port)
-- daichi-ishida/Stable-Fluids — https://github.com/daichi-ishida/Stable-Fluids
-- richardbenstead/Stable-Fluids — https://github.com/richardbenstead/Stable-Fluids
+## Libraries
 
-**Planned**
-- Jeff Jones, *Characteristics of Pattern Formation and Evolution in Approximations of Physarum Transport Networks*, Artificial Life, 2010.
-
-**Libraries**
-- [Quil](http://quil.info/) (Processing) — windowing & rendering.
-- [JTransforms](https://github.com/wendykierp/JTransforms) — pure-Java FFT.
-- [dtype-next](https://github.com/cnuernber/dtype-next) — typed array buffers.
+[Quil](http://quil.info/) (rendering) · [JTransforms](https://github.com/wendykierp/JTransforms)
+(FFT) · [dtype-next](https://github.com/cnuernber/dtype-next).
