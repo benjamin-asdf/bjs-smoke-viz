@@ -111,3 +111,14 @@
       {:max mx :sum sum :nonzero nz})))
 
 (defn -main [& _] (start!))
+
+(comment
+  (swap! params assoc :dt 0.5)
+  (swap! params assoc :dt 0.1)
+  (swap! params assoc :visc 0.0001)
+  (swap! params assoc :buoy 0.5)
+  (swap! params assoc :emit 1)
+  (swap! params assoc :keep 0.99)
+  (swap! params assoc :edge-margin 10)
+  (swap! params assoc :blur-passes 0)
+  (swap! params assoc :expos 3.2))

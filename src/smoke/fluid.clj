@@ -11,13 +11,12 @@
      V' = f * [(- kx ky/|k|^2) U + (1 - ky^2/|k|^2) V]  ; velocity parallel to k
 
    Removing the k-parallel component IS the projection onto divergence-free
-   (mass-conserving) fields — exact, non-iterative, and free of the collocated
-   checkerboard that plagued the Gauss-Seidel version. No boundary ring either:
-   the FFT domain is PERIODIC, so the grid is a plain n x n and smoke wraps
-   edge-to-edge.
+   fields — exact, non-iterative, free of the collocated checkerboard. The FFT
+   domain is PERIODIC, so the grid is a plain n x n (no boundary ring).
 
-   Fields are flat `float-array`s, POS(i,j) = i + n*j. Forces (:fx/:fy) are set
-   by the caller each frame; velocity self-advects, density advects on velocity."
+   Density is carried in three colour channels (:dr :dg :db) so multiple coloured
+   sources mix additively (red + blue overlap => magenta). All channels advect on
+   the shared velocity field. :dens holds their sum, used for buoyancy/wind."
   (:import [org.jtransforms.fft FloatFFT_2D]))
 
 (set! *warn-on-reflection* true)
@@ -33,16 +32,18 @@
     {:n    n
      :u    (f) :v    (f)              ; velocity
      :u0   (f) :v0   (f)              ; advect scratch (previous velocity)
-     :dens (f) :dens0 (f)             ; density + advect scratch
      :fx   (f) :fy   (f)              ; force accumulators (set each frame)
      :cu   (float-array (* 2 sz))     ; complex velocity buffers for the FFT
      :cv   (float-array (* 2 sz))
-     :blur (f) :tmp (f)               ; render-blur scratch
+     :dens (f)                        ; total density (sum of channels), for physics
+     :dr   (f) :dg   (f) :db   (f)    ; colour density channels
+     :dr0  (f) :dg0  (f) :db0  (f)    ; channel advect scratch
+     :br   (f) :bg   (f) :bb   (f)    ; render-blur output per channel
+     :tmp  (f)                        ; blur ping-pong scratch
      :fft  (FloatFFT_2D. n n)}))
 
 (defn clear-forces!
-  "Zero the per-frame force fields. Call at the top of a frame, then add forces
-   (buoyancy is applied inside vel-step; the caller adds any others into :fx/:fy)."
+  "Zero the per-frame force fields."
   [f]
   (java.util.Arrays/fill ^floats (:fx f) (float 0.0))
   (java.util.Arrays/fill ^floats (:fy f) (float 0.0))
@@ -76,7 +77,7 @@
 (defn vel-step
   "Advance velocity one tick: buoyancy -> add forces -> self-advect -> FFT ->
    diffuse+project -> IFFT. :fx/:fy hold this frame's external forces; buoyancy
-   (proportional to density, upward = -y) is added here."
+   (proportional to total density, upward = -y) is added here."
   [f visc dt buoy]
   (let [n (long (:n f)) sz (* n n)
         visc (double visc) dt (double dt) buoy (double buoy)
@@ -86,23 +87,19 @@
         ^floats cu (:cu f) ^floats cv (:cv f)
         ^FloatFFT_2D fft (:fft f)
         half (quot n 2)]
-    ;; forces: buoyancy (up) + caller's :fx/:fy
     (dotimes [k sz]
       (aset u k (float (+ (aget u k) (* dt (aget fx k)))))
       (aset v k (float (+ (aget v k) (* dt (- (aget fy k) (* buoy (aget dens k))))))))
-    ;; self-advection
     (System/arraycopy u 0 u0 0 sz)
     (System/arraycopy v 0 v0 0 sz)
     (advect! n u u0 u0 v0 dt)
     (advect! n v v0 u0 v0 dt)
-    ;; load real velocity into interleaved complex buffers (imag = 0)
     (dotimes [k sz]
       (let [b (* 2 k)]
-        (aset cu b (aget u k))       (aset cu (inc b) (float 0.0))
-        (aset cv b (aget v k))       (aset cv (inc b) (float 0.0))))
+        (aset cu b (aget u k)) (aset cu (inc b) (float 0.0))
+        (aset cv b (aget v k)) (aset cv (inc b) (float 0.0))))
     (.complexForward fft cu)
     (.complexForward fft cv)
-    ;; diffuse + project, per wavevector
     (dotimes [j n]
       (let [ky (double (if (<= j half) j (- j n)))]
         (dotimes [i n]
@@ -120,38 +117,53 @@
                 (aset cu (inc b) (float (* fdamp (- (* a uim) (* bb vim)))))
                 (aset cv b       (float (* fdamp (+ (* (- bb) ure) (* c vre)))))
                 (aset cv (inc b) (float (* fdamp (+ (* (- bb) uim) (* c vim)))))))))))
-    (.complexInverse fft cu true)   ; true => normalize by 1/(n*n)
+    (.complexInverse fft cu true)
     (.complexInverse fft cv true)
     (dotimes [k sz]
       (aset u k (aget cu (* 2 k)))
       (aset v k (aget cv (* 2 k))))
     f))
 
-(defn advect-density
-  "Advance density one tick by advecting it along the velocity field."
-  [f dt]
-  (let [n (long (:n f)) sz (* n n)
-        ^floats dens (:dens f) ^floats d0 (:dens0 f)
-        ^floats u (:u f) ^floats v (:v f)]
-    (System/arraycopy dens 0 d0 0 sz)
-    (advect! n dens d0 u v (double dt))
+(defn compute-total!
+  "Sum the colour channels into :dens (used by buoyancy and wind)."
+  [f]
+  (let [^floats dens (:dens f) ^floats dr (:dr f) ^floats dg (:dg f) ^floats db (:db f)
+        sz (alength dens)]
+    (dotimes [k sz]
+      (aset dens k (+ (aget dr k) (aget dg k) (aget db k))))
     f))
 
-(defn dissipate!
-  "Fade density by `keep` per tick (<1 => soft fade, no pile-up)."
+(defn advect-colors!
+  "Advect all three colour channels along the velocity field."
+  [f dt]
+  (let [n (long (:n f)) sz (* n n) dt (double dt)
+        ^floats u (:u f) ^floats v (:v f)
+        ^floats dr (:dr f) ^floats dg (:dg f) ^floats db (:db f)
+        ^floats dr0 (:dr0 f) ^floats dg0 (:dg0 f) ^floats db0 (:db0 f)]
+    (System/arraycopy dr 0 dr0 0 sz) (advect! n dr dr0 u v dt)
+    (System/arraycopy dg 0 dg0 0 sz) (advect! n dg dg0 u v dt)
+    (System/arraycopy db 0 db0 0 sz) (advect! n db db0 u v dt)
+    f))
+
+(defn dissipate-colors!
+  "Fade every colour channel by `keep` per tick."
   [f keep]
-  (let [^floats d (:dens f) k (float keep)]
-    (dotimes [i (alength d)] (aset d i (* (aget d i) k))))
+  (let [k (float keep)
+        ^floats dr (:dr f) ^floats dg (:dg f) ^floats db (:db f)
+        sz (alength dr)]
+    (dotimes [i sz]
+      (aset dr i (* (aget dr i) k))
+      (aset dg i (* (aget dg i) k))
+      (aset db i (* (aget db i) k))))
   f)
 
 (defn edge-fade!
-  "Absorbing sponge border: fade density AND velocity to 0 within `margin` cells
-   of any edge. On the periodic FFT domain this makes the borders behave like
-   containing walls — flow dies at the edge instead of wrapping around. margin<=0
-   disables."
+  "Absorbing sponge border: fade colour channels AND velocity to 0 within
+   `margin` cells of any edge, so the periodic domain behaves like walls."
   [f margin]
   (let [n (long (:n f)) m (double margin)
-        ^floats d (:dens f) ^floats u (:u f) ^floats v (:v f)]
+        ^floats dr (:dr f) ^floats dg (:dg f) ^floats db (:db f)
+        ^floats u (:u f) ^floats v (:v f)]
     (when (pos? m)
       (dotimes [j n]
         (let [dj (min j (- n 1 j))]
@@ -159,32 +171,39 @@
             (let [dist (double (min dj (min i (- n 1 i))))]
               (when (< dist m)
                 (let [k (idx n i j) fac (float (/ dist m))]
-                  (aset d k (* (aget d k) fac))
+                  (aset dr k (* (aget dr k) fac))
+                  (aset dg k (* (aget dg k) fac))
+                  (aset db k (* (aget db k) fac))
                   (aset u k (* (aget u k) fac))
-                  (aset v k (* (aget v k) fac))))))))))
-  f)
+                  (aset v k (* (aget v k) fac)))))))))
+    f))
 
-(defn blur-density
-  "Separable box blur of density into :blur (sim untouched), `passes` strength.
-   Returns the blurred array for the renderer — removes residual speckle.
-   Periodic, matching the solver domain."
-  [f passes]
-  (let [n (long (:n f)) p (long passes) third (/ 1.0 3.0)
-        ^floats a (:blur f) ^floats b (:tmp f) ^floats dens (:dens f)]
-    (System/arraycopy dens 0 a 0 (alength dens))
+(defn- blur-into
+  "Separable box blur of `src` into `out` (using `tmp` as ping-pong), `passes`."
+  [n ^floats src ^floats out ^floats tmp passes]
+  (let [n (long n) p (long passes) third (/ 1.0 3.0)]
+    (System/arraycopy src 0 out 0 (* n n))
     (dotimes [_ p]
       (dotimes [j n]
         (dotimes [i n]
           (let [il (if (zero? i) (dec n) (dec i))
                 ir (if (= i (dec n)) 0 (inc i))]
-            (aset b (idx n i j)
-                  (float (* third (+ (aget a (idx n il j)) (aget a (idx n i j))
-                                     (aget a (idx n ir j)))))))))
+            (aset tmp (idx n i j)
+                  (float (* third (+ (aget out (idx n il j)) (aget out (idx n i j))
+                                     (aget out (idx n ir j)))))))))
       (dotimes [j n]
         (dotimes [i n]
           (let [jd (if (zero? j) (dec n) (dec j))
                 ju (if (= j (dec n)) 0 (inc j))]
-            (aset a (idx n i j)
-                  (float (* third (+ (aget b (idx n i jd)) (aget b (idx n i j))
-                                     (aget b (idx n i ju))))))))))
-    a))
+            (aset out (idx n i j)
+                  (float (* third (+ (aget tmp (idx n i jd)) (aget tmp (idx n i j))
+                                     (aget tmp (idx n i ju))))))))))))
+
+(defn blur-colors!
+  "Blur each colour channel into :br/:bg/:bb for rendering (sim untouched)."
+  [f passes]
+  (let [n (long (:n f)) tmp (:tmp f)]
+    (blur-into n (:dr f) (:br f) tmp passes)
+    (blur-into n (:dg f) (:bg f) tmp passes)
+    (blur-into n (:db f) (:bb f) tmp passes)
+    f))

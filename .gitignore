@@ -1,2 +1,6 @@
 /.cpcache/
 /.nrepl-port
+/target/
+/classes/
+*.class
+.DS_Store
