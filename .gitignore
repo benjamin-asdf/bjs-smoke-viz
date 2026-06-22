@@ -4,3 +4,5 @@
 /classes/
 *.class
 .DS_Store
+
+/.clj-kondo/.cache/

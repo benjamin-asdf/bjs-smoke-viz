@@ -1,1 +1,0 @@
-["^ ","~:members",["^ ","initSingleton",["~#set",[["^ ","~:flags",["^2",["~:method","~:public","~:static"]]]]],"shutdown",["^2",[["^ ","^3",["^2",["^4","^5","^6"]]]]],"getFactory",["^2",[["^ ","^3",["^2",["^4","^5","^6"]]]]],"chooseGraphicsConfiguration",["^2",[["^ ","^3",["^2",["^4","^5","~:final"]]]]]]]
