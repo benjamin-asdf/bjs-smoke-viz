@@ -22,15 +22,15 @@
 ;; source: {:color [r g b] (0..1) :emit rate :r radius-cells
 ;;          :motion {:type :static|:osc-x|:osc-y|:circle :base [fx fy] :amp :speed :phase}}
 (def themes
-  {:rgb    [{:color [1.0 0.15 0.10] :emit 1.0 :r 3 :motion {:type :osc-x  :base [0.35 0.82] :amp 0.16 :speed 0.030}}
-            {:color [0.10 0.45 1.0] :emit 1.0 :r 3 :motion {:type :osc-x  :base [0.65 0.82] :amp 0.16 :speed 0.026 :phase 3.14159}}
-            {:color [0.20 1.0 0.30] :emit 0.8 :r 2 :motion {:type :circle :base [0.50 0.62] :amp 0.12 :speed 0.020}}]
+  {:rgb    [{:color [1.0 0.15 0.10] :emit 1.0 :r 3 :motion {:type :brownian :base [0.35 0.55] :amp 0.010}}
+            {:color [0.10 0.45 1.0] :emit 1.0 :r 3 :motion {:type :brownian :base [0.65 0.55] :amp 0.010}}
+            {:color [0.20 1.0 0.30] :emit 0.8 :r 2 :motion {:type :brownian :base [0.50 0.50] :amp 0.012}}]
    :duet   [{:color [1.0 0.20 0.60] :emit 1.0 :r 3 :motion {:type :osc-x  :base [0.40 0.82] :amp 0.22 :speed 0.030}}
             {:color [0.20 0.85 1.0] :emit 1.0 :r 3 :motion {:type :osc-x  :base [0.60 0.82] :amp 0.22 :speed 0.030 :phase 3.14159}}]
    :single [{:color [1.0 0.55 0.20] :emit 1.0 :r 3 :motion {:type :static :base [0.50 0.82]}}]})
 
 (def default-params
-  {:dt          0.1      ; sim speed — lower = slower smoke
+  {:dt          0.05     ; sim speed — lower = slower smoke
    :visc        0.0001   ; spectral viscosity (exp(-|k|^2 dt visc)); higher = smoother
    :buoy        0.5      ; buoyancy (rise speed), force per unit total density
    :keep        0.99     ; density kept per frame (<1 => soft fade)
@@ -39,34 +39,44 @@
    :expos       2.4      ; tonemap exposure per colour channel
    :wind        5.0      ; wind strength (noise flow-field force on the smoke)
    :noise-scale 2.0      ; wind spatial frequency (cells of swirl)
-   :noise-speed 0.04     ; how fast the wind field evolves
+   :noise-speed 0.02     ; how fast the wind field evolves
    :theme       :rgb})   ; scene preset — one of (keys themes)
 
 ;; ---- moving coloured sources ----------------------------------------------
-(defonce frame (atom 0))   ; frame counter, drives source motion + wind time
+(defonce frame   (atom 0))    ; frame counter, drives deterministic motion + wind time
+(defonce src-pos (atom nil))  ; {:theme kw :pos [[x y] ...]} — live source positions
 
-(defn- source-pos [motion ^double t]
-  (let [base (:base motion)
-        bx (double (first base)) by (double (second base))
-        amp (double (:amp motion 0.0)) speed (double (:speed motion 0.0))
-        phase (double (:phase motion 0.0))
-        ph (+ (* speed t) phase)]
-    (case (:type motion)
-      :osc-x  [(+ bx (* amp (Math/sin ph))) by]
-      :osc-y  [bx (+ by (* amp (Math/sin ph)))]
-      :circle [(+ bx (* amp (Math/cos ph))) (+ by (* amp (Math/sin ph)))]
-      [bx by])))
+(defn- clamp01m [^double x] (min 0.9 (max 0.1 x)))
 
-(defn- emit-sources! [fl ^double t srcs]
+(defn- next-pos
+  "Next position for a source: brownian random-walks from its previous position;
+   deterministic motions are computed from base + time."
+  [src prev ^double t]
+  (let [m (:motion src)]
+    (if (= (:type m) :brownian)
+      (let [step (double (:amp m 0.01))]
+        [(clamp01m (+ (double (first prev))  (* step 2.0 (- (double (rand)) 0.5))))
+         (clamp01m (+ (double (second prev)) (* step 2.0 (- (double (rand)) 0.5))))])
+      (let [base (:base m)
+            bx (double (first base)) by (double (second base))
+            amp (double (:amp m 0.0)) speed (double (:speed m 0.0))
+            phase (double (:phase m 0.0))
+            ph (+ (* speed t) phase)]
+        (case (:type m)
+          :osc-x  [(+ bx (* amp (Math/sin ph))) by]
+          :osc-y  [bx (+ by (* amp (Math/sin ph)))]
+          :circle [(+ bx (* amp (Math/cos ph))) (+ by (* amp (Math/sin ph)))]
+          [bx by])))))
+
+(defn- emit-sources! [fl srcs positions]
   (let [n (long N)
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)]
-    (doseq [src srcs]
+    (doseq [[src pos] (map vector srcs positions)]
       (let [color (:color src)
             e  (double (:emit src))
             er (float (* e (double (nth color 0))))
             eg (float (* e (double (nth color 1))))
             eb (float (* e (double (nth color 2))))
-            pos (source-pos (:motion src) t)
             cx (long (* (double (first pos)) n))
             cy (long (* (double (second pos)) n))
             r  (long (:r src))]
@@ -108,8 +118,14 @@
    the noise wind. Callers may add more (e.g. mouse) before `advance`."
   [fl p]
   (f/clear-forces! fl)
-  (let [t (double (swap! frame inc))]
-    (emit-sources! fl t (get themes (:theme p) (:single themes)))
+  (let [t    (double (swap! frame inc))
+        srcs (get themes (:theme p) (:single themes))]
+    ;; (re)initialise live positions when the theme changes
+    (when (not= (:theme p) (:theme @src-pos))
+      (reset! src-pos {:theme (:theme p) :pos (mapv :base (map :motion srcs))}))
+    (let [positions (mapv #(next-pos %1 %2 t) srcs (:pos @src-pos))]
+      (swap! src-pos assoc :pos positions)
+      (emit-sources! fl srcs positions))
     (f/compute-total! fl)
     (apply-wind! fl p t))
   fl)

@@ -1,0 +1,1 @@
+["^ ","~:members",["^ ","setGLStateKeeperListener",["~#set",[["^ ","~:flags",["^2",["~:method","~:public"]]]]],"isGLStatePreservationSupported",["^2",[["^ ","^3",["^2",["^4","^5"]]]]],"preserveGLStateAtDestroy",["^2",[["^ ","^3",["^2",["^4","^5"]]]]],"getPreservedGLState",["^2",[["^ ","^3",["^2",["^4","^5"]]]]],"clearPreservedGLState",["^2",[["^ ","^3",["^2",["^4","^5"]]]]]]]

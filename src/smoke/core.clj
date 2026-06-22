@@ -68,7 +68,7 @@
     (.loadPixels img)
     (scene/render-pixels! state @params (.-pixels img))
     (.updatePixels img)
-    (q/image img 0 0 scene/W scene/W)))
+    (q/image img 0 0 (q/width) (q/height))))   ; scale render to fill the window/screen
 
 (defn key-pressed [state event]
   (case (:key event)
@@ -78,18 +78,30 @@
 
 (defn start!
   "Launch (or relaunch) the sketch. Handlers are #'vars so REPL redefinition
-   takes effect live. Calling again disposes the old window (resets the field)."
-  []
+   takes effect live. Calling again disposes the old window (resets the field).
+   Pass :fullscreen true for present-mode fullscreen (ESC exits)."
+  [& {:keys [fullscreen]}]
   (when-let [s @sketch] (try (.dispose ^processing.core.PApplet s) (catch Exception _)))
   (reset! sketch
-          (q/sketch
-           :title       "bjs-smoke-viz"
-           :size        [scene/W scene/W]
-           :setup       #'setup
-           :update      #'update-state
-           :draw        #'draw
-           :key-pressed #'key-pressed
-           :middleware  [qm/fun-mode])))
+          (if fullscreen
+            (let [d (.getScreenSize (java.awt.Toolkit/getDefaultToolkit))]
+              (q/sketch
+               :title       "bjs-smoke-viz"
+               :size        [(.width d) (.height d)]
+               :features    [:present]
+               :setup       #'setup
+               :update      #'update-state
+               :draw        #'draw
+               :key-pressed #'key-pressed
+               :middleware  [qm/fun-mode]))
+            (q/sketch
+             :title       "bjs-smoke-viz"
+             :size        [scene/W scene/W]
+             :setup       #'setup
+             :update      #'update-state
+             :draw        #'draw
+             :key-pressed #'key-pressed
+             :middleware  [qm/fun-mode]))))
 
 ;; ---- REPL dev helpers -----------------------------------------------------
 
