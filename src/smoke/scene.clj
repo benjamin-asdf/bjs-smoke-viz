@@ -53,16 +53,16 @@
    :star-radius 3        ; star radius in window pixels
    :star-speed  0.25     ; twinkle speed (white-flash lerp over time)
    ;; --- Physarum (used by :slime / :network themes) ---
-   :p-count       4000   ; number of agents
+   :p-count       3000   ; number of agents (more = finer, denser networks)
    :p-sensor      9.0    ; sensor offset distance (cells)
    :p-sense-angle 0.5    ; angle between the 3 sensors (rad)
    :p-turn        0.45   ; how hard agents steer (rad)
    :p-speed       1.2    ; agent step size (cells/tick)
-   :p-deposit     0.06   ; deposit per agent (colour in :slime, white trail in :network)
+   :p-deposit     0.2   ; deposit per agent (colour in :slime, white trail in :network)
    :p-wind        0.2    ; how much the fluid velocity drags the agents
    :p-decay       0.90   ; trail kept per tick (:network mode)
    :p-bright      0.6    ; white-network brightness (:network mode)
-   :boids         nil})  ; boids config (:sources mode); nil => boids/default-boid
+   :boids         nil})  ;; boids config (:sources mode); nil => boids/default-boid
 
 (defn theme [p] (get themes (:theme p) (:jets themes)))
 (defn mode  [p] (:mode (theme p)))

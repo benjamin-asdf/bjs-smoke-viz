@@ -16,16 +16,22 @@
             [quil.middleware :as qm]
             [smoke.fluid :as f]
             [smoke.scene :as scene])
-  (:import [processing.core PImage])
+  (:import [processing.core PImage]
+           [processing.opengl PGraphicsOpenGL])
   (:gen-class))
 
 (def params (atom scene/default-params))
 (defonce sketch     (atom nil))   ; running applet
 (defonce last-state (atom nil))   ; latest sim state, for REPL inspection
+(defonce reset?     (atom false)) ; set true to re-seed the field next frame (controls window)
+(defonce pause-flip? (atom false)) ; set true to toggle pause next frame (controls window)
 
 (defn setup []
   (q/frame-rate 60)
+  (q/background 0)              ; black from frame 1 (no gray default-canvas flash)
   (q/image-mode :corner)
+  ;; smooth (bilinear) texture upscaling so the GPU doesn't show blocky pixels
+  (try (.textureSampling ^PGraphicsOpenGL (q/current-graphics) 4) (catch Throwable _))
   (assoc (scene/new-fluid @params)
          :img    (q/create-image scene/W scene/W :rgb)
          :paused false))
@@ -57,14 +63,21 @@
                   (aset fy k (+ (aget fy k) (float (* 3.0 dy)))))))))))))
 
 (defn update-state [state]
-  (if (:paused state)
-    state
-    (let [p @params]
-      (scene/seed-sources! state p)
-      (inject-mouse! state)
-      (let [s (scene/advance state p)]
-        (reset! last-state s)
-        s))))
+  (let [state (if @pause-flip?
+                (do (reset! pause-flip? false) (update state :paused not))
+                state)]
+    (cond
+      @reset? (do (reset! reset? false)
+                  (assoc (scene/new-fluid @params)
+                         :img (:img state) :paused (:paused state)))
+      (:paused state) state
+      :else
+      (let [p @params]
+        (scene/seed-sources! state p)
+        (inject-mouse! state)
+        (let [s (scene/advance state p)]
+          (reset! last-state s)
+          s)))))
 
 (defn draw [state]
   (let [img ^PImage (:img state)]
@@ -105,7 +118,10 @@
                :key-pressed #'key-pressed
                :middleware  [qm/fun-mode]]
               (when fullscreen [:features [:present]]))]
-    (reset! sketch (apply q/sketch opts))))
+    (reset! sketch (apply q/sketch opts))
+    ;; bring up the steering panel in a second window (lazy require => no cycle)
+    (try ((requiring-resolve 'smoke.controls/open!)) (catch Throwable _))
+    @sketch))
 
 ;; ---- REPL dev helpers -----------------------------------------------------
 
@@ -126,10 +142,19 @@
           nz  (areduce d i c 0 (if (> (aget d i) 0.01) (inc c) c))]
       {:max mx :sum sum :nonzero nz})))
 
-(defn -main [& _] (start!))
+(defn -main [& _]
+  (start!))
 
 (comment
+
+  (do
+    (require '[smoke.core :reload true])
+    (require '[smoke.scene :reload true])
+    (start!))
+
   (swap! params assoc :dt 0.5)
+  (swap! params assoc :dt 0.01)
+
   (swap! params assoc :dt 0.1)
   (swap! params assoc :visc 0.0001)
   (swap! params assoc :buoy 0.5)
