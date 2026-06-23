@@ -80,31 +80,32 @@
     state))
 
 (defn start!
-  "Launch (or relaunch) the sketch. Handlers are #'vars so REPL redefinition
-   takes effect live. Calling again disposes the old window (resets the field).
-   Pass :fullscreen true for present-mode fullscreen (ESC exits)."
-  [& {:keys [fullscreen]}]
+  "Launch (or relaunch) the sketch on the OpenGL (:p2d) renderer, so the GPU
+   scales the fixed-resolution (scene/W) render up to the window — big windows
+   stay cheap. The CPU per-pixel render cost is fixed at scene/W regardless.
+
+   Options:
+     :fullscreen true  — present-mode fullscreen (ESC exits)
+     :size  N          — windowed at N x N px (defaults to scene/W)
+   Handlers are #'vars so REPL redefinition takes effect live; relaunching
+   disposes the old window (and resets the field)."
+  [& {:keys [fullscreen size]}]
   (when-let [s @sketch] (try (.dispose ^processing.core.PApplet s) (catch Exception _)))
-  (reset! sketch
-          (if fullscreen
-            (let [d (.getScreenSize (java.awt.Toolkit/getDefaultToolkit))]
-              (q/sketch
-               :title       "bjs-smoke-viz"
-               :size        [(.width d) (.height d)]
-               :features    [:present]
+  (let [dims (cond fullscreen (let [d (.getScreenSize (java.awt.Toolkit/getDefaultToolkit))]
+                                [(.width d) (.height d)])
+                   size       [size size]
+                   :else      [scene/W scene/W])
+        opts (concat
+              [:title       "bjs-smoke-viz"
+               :size        dims
+               :renderer    :p2d
                :setup       #'setup
                :update      #'update-state
                :draw        #'draw
                :key-pressed #'key-pressed
-               :middleware  [qm/fun-mode]))
-            (q/sketch
-             :title       "bjs-smoke-viz"
-             :size        [scene/W scene/W]
-             :setup       #'setup
-             :update      #'update-state
-             :draw        #'draw
-             :key-pressed #'key-pressed
-             :middleware  [qm/fun-mode]))))
+               :middleware  [qm/fun-mode]]
+              (when fullscreen [:features [:present]]))]
+    (reset! sketch (apply q/sketch opts))))
 
 ;; ---- REPL dev helpers -----------------------------------------------------
 

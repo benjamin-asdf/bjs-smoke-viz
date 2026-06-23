@@ -30,8 +30,8 @@
              :sources [{:color [1.0 0.15 0.10] :emit 1.0 :r 3 :motion {:type :brownian :base [0.35 0.55] :amp 0.0035}}
                        {:color [0.10 0.45 1.0] :emit 1.0 :r 3 :motion {:type :brownian :base [0.65 0.55] :amp 0.0035}}
                        {:color [0.20 1.0 0.30] :emit 0.8 :r 2 :motion {:type :brownian :base [0.50 0.50] :amp 0.0040}}]}
-   :slime   {:mode :smoke
-             :palette [[1.0 0.15 0.10] [0.15 0.60 0.55] [0.25 1.0 0.20]]}
+   :slime   {:mode :smoke   ; saturated hues (from the summerfest palette) so they stay vivid
+             :palette [[1.0 0.05 0.70] [1.0 0.55 0.0] [0.20 1.0 0.25]]}
    :network {:mode :trail
              :palette [[1.0 1.0 1.0]]}})
 
@@ -42,13 +42,13 @@
    :keep        0.99     ; density kept per frame (<1 => soft fade)
    :edge-margin 10       ; sponge-border width (cells); fades flow at edges (walls)
    :blur-passes 0        ; render-only density blur (0 = crisp)
-   :expos       2.4      ; tonemap exposure per colour channel
+   :expos       1.4      ; tonemap exposure per colour channel (lower = keeps colour, less white-out)
    :wind        4.0      ; wind strength (noise flow-field force on the smoke)
    :noise-scale 2.0      ; wind spatial frequency
    :noise-speed 0.012    ; how fast the wind field evolves
    :theme       :slime   ; one of (keys themes)
    ;; --- "stars": bright colour dots flashing white at high-density peaks ---
-   :stars       true
+   :stars       false
    :star-thresh 2.5      ; density (sum of channels) above which a peak sparks (higher = rarer/persistent)
    :star-radius 3        ; star radius in window pixels
    :star-speed  0.25     ; twinkle speed (white-flash lerp over time)

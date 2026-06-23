@@ -68,17 +68,22 @@
         ^floats u (:u fl) ^floats v (:v fl)
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
         ^floats trail (:trail phys) ^floats ttmp (:ttmp phys)
-        ^floats dens (:dens fl)
         trail? (= (:p-mode p) :trail)
-        field  (if trail? trail dens)        ; what the agents sense
         so    (double (:p-sensor p)) sa (double (:p-sense-angle p))
         ra    (double (:p-turn p))   ss (double (:p-speed p))
         dep   (double (:p-deposit p)) windk (double (:p-wind p))]
     (dotimes [i cnt]
       (let [x (aget xs i) y (aget ys i) h (aget hs i)
-            cl (sense field n (+ x (* so (Math/cos (- h sa)))) (+ y (* so (Math/sin (- h sa)))))
-            cc (sense field n (+ x (* so (Math/cos h)))        (+ y (* so (Math/sin h))))
-            cr (sense field n (+ x (* so (Math/cos (+ h sa)))) (+ y (* so (Math/sin (+ h sa)))))
+            ;; each agent senses ITS OWN colour (weighted density) so the colours
+            ;; form separate networks instead of mixing to white. (:trail mode
+            ;; senses the shared white trail.)
+            wr (aget ar i) wg (aget ag i) wb (aget ab i)
+            kl (f/idx n (long (wrap (+ x (* so (Math/cos (- h sa)))) n)) (long (wrap (+ y (* so (Math/sin (- h sa)))) n)))
+            kc (f/idx n (long (wrap (+ x (* so (Math/cos h))) n))        (long (wrap (+ y (* so (Math/sin h))) n)))
+            kr (f/idx n (long (wrap (+ x (* so (Math/cos (+ h sa)))) n)) (long (wrap (+ y (* so (Math/sin (+ h sa)))) n)))
+            cl (double (if trail? (aget trail kl) (+ (* wr (aget dr kl)) (* wg (aget dg kl)) (* wb (aget db kl)))))
+            cc (double (if trail? (aget trail kc) (+ (* wr (aget dr kc)) (* wg (aget dg kc)) (* wb (aget db kc)))))
+            cr (double (if trail? (aget trail kr) (+ (* wr (aget dr kr)) (* wg (aget dg kr)) (* wb (aget db kr)))))
             h2 (cond
                  (and (>= cc cl) (>= cc cr)) h
                  (and (< cc cl) (< cc cr))   (if (< (double (rand)) 0.5) (- h ra) (+ h ra))
