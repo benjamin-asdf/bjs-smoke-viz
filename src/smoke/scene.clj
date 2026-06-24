@@ -133,6 +133,7 @@
    :audio-dt-amp 0.15    ; extra dt kicked in on each beat onset (smoke.audio); base :dt is ~0.04
    :audio-floor 0.08     ; in audio mode, how far below :keep silence drops a colour (clears density)
    :audio-emit-amp 1.5   ; loudness -> extra emission: deposit scales by (1 + this * energy) (smoke.audio)
+   :audio-white? false   ; audio mode: agents deposit WHITE, each freq band fades in its palette colour
    ;; --- "stars": bright colour dots flashing white at high-density peaks ---
    :stars       false
    :star-thresh 2.5      ; density (sum of channels) above which a peak sparks (higher = rarer/persistent)
@@ -159,6 +160,7 @@
 (defonce audio-keep (atom nil)) ; [kr kg kb] per-channel keep set by smoke.audio; nil => use scalar :keep
 (defonce audio-dt   (atom nil)) ; transient dt boost on beats, set by smoke.audio; nil/0 => none
 (defonce audio-emit (atom nil)) ; emission (deposit) multiplier from loudness, set by smoke.audio; nil/0 => none
+(defonce audio-gains (atom nil)) ; per-band gains [g0 g1 ..] for :audio-white? mode (agents fade white->colour)
 (defonce audio-hook (atom nil)) ; 0-arg fn run once per sim frame (smoke.audio drives keep/dt from playback)
 (defonce stars   (atom []))   ; persistent star particles {:x :y :vx :vy :ax :ay :r :g :b}
 (def ^:const STAR-MAX 700)
@@ -299,7 +301,9 @@
         m  (mode p)]
     (when (#{:smoke :trail :haze} m)
       (let [em (double (or @audio-emit 0.0))                ; louder audio => more smoke deposited
-            pp (assoc p :p-mode m :p-deposit (* (double (:p-deposit p)) (+ 1.0 em)))]
+            pp (assoc p :p-mode m
+                      :p-deposit (* (double (:p-deposit p)) (+ 1.0 em))
+                      :audio-gains @audio-gains)]           ; per-band gains for :audio-white? deposit
         (phys/step! (:phys fl) fl pp)))
     (let [fl (f/advect-colors! fl dt)
           ;; audio layer overrides scalar keep with a per-colour [kr kg kb]

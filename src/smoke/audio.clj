@@ -196,7 +196,7 @@
 (defn- tick! []
   (when-let [{:keys [analysis ^long t0]} @state]
     (let [secs  (/ (- (System/nanoTime) t0) 1.0e9)
-          gains (gains-at analysis secs)
+          ^doubles gains (gains-at analysis secs)
           p     @core/params]
       (if gains
         (let [pal (or (:palette p) (:palette (scene/theme p)) [[1.0 1.0 1.0]])
@@ -209,10 +209,16 @@
               n   (alength gains)
               energy (if (pos? n) (/ (areduce gains i s 0.0 (+ s (aget gains i))) n) 0.0)]
           (reset! kick k)
-          (reset! scene/audio-keep (channel-keep gains pal (:keep p) (:audio-amp p) (:audio-floor p)))
+          (if (:audio-white? p)
+            ;; white mode: agents fade white->colour from the raw band gains; keep stays scalar
+            (do (reset! scene/audio-gains gains)
+                (reset! scene/audio-keep nil))
+            (do (reset! scene/audio-keep (channel-keep gains pal (:keep p) (:audio-amp p) (:audio-floor p)))
+                (reset! scene/audio-gains nil)))
           (reset! scene/audio-dt (* (double (:audio-dt-amp p)) k))
           (reset! scene/audio-emit (* (double (:audio-emit-amp p)) energy)))
         (do (reset! scene/audio-keep nil)
+            (reset! scene/audio-gains nil)
             (reset! scene/audio-dt nil)
             (reset! scene/audio-emit nil)
             (reset! kick 0.0))))))

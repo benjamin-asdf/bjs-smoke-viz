@@ -23,16 +23,18 @@
   [^long n ^long cnt palette]
   (let [xs (float-array cnt) ys (float-array cnt) hs (float-array cnt)
         ar (float-array cnt) ag (float-array cnt) ab (float-array cnt)
+        band (int-array cnt)                 ; palette/freq-band index, for :audio-white? mode
         pal (vec palette) pc (count pal)]
     (dotimes [i cnt]
       (aset xs i (float (* (double (rand)) n)))
       (aset ys i (float (* (double (rand)) n)))
       (aset hs i (float (* (double (rand)) PI2)))
+      (aset band i (int (mod i pc)))
       (let [c (nth pal (mod i pc))]
         (aset ar i (float (nth c 0)))
         (aset ag i (float (nth c 1)))
         (aset ab i (float (nth c 2)))))
-    {:n n :count cnt :xs xs :ys ys :hs hs :ar ar :ag ag :ab ab
+    {:n n :count cnt :xs xs :ys ys :hs hs :ar ar :ag ag :ab ab :band band
      :trail (float-array (* n n)) :ttmp (float-array (* n n))}))
 
 (defn- wrap ^double [^double x ^long n]
@@ -65,10 +67,15 @@
   (let [n (long (:n phys)) cnt (long (:count phys))
         ^floats xs (:xs phys) ^floats ys (:ys phys) ^floats hs (:hs phys)
         ^floats ar (:ar phys) ^floats ag (:ag phys) ^floats ab (:ab phys)
+        ^ints band (:band phys)
         ^floats u (:u fl) ^floats v (:v fl)
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
         ^floats trail (:trail phys) ^floats ttmp (:ttmp phys)
         trail? (= (:p-mode p) :trail)
+        ;; :audio-white? => deposit WHITE, fading in each agent's palette colour
+        ;; by its freq band's gain (silent band => white, loud band => full colour)
+        ^doubles gains (:audio-gains p)
+        white? (boolean (and gains (:audio-white? p)))
         ;; :haze => agents don't steer toward their trail (no networks); they
         ;; random-wander and the fluid carries the colour they deposit => smoke.
         haze?  (= (:p-mode p) :haze)
@@ -105,8 +112,19 @@
         (aset xs i (float nx))
         (aset ys i (float ny))
         (aset hs i (float h2))
-        (if trail?
+        (cond
+          trail?
           (aset trail dk (+ (aget trail dk) (float dep)))
+          white?
+          (let [bi (aget band i)
+                e  (if (< bi (alength gains)) (aget gains bi) 0.0)  ; 0 => white, 1 => full colour
+                er (* dep (- 1.0 (* e (- 1.0 (aget ar i)))))
+                eg (* dep (- 1.0 (* e (- 1.0 (aget ag i)))))
+                eb (* dep (- 1.0 (* e (- 1.0 (aget ab i)))))]
+            (aset dr dk (+ (aget dr dk) (float er)))
+            (aset dg dk (+ (aget dg dk) (float eg)))
+            (aset db dk (+ (aget db dk) (float eb))))
+          :else
           (do (aset dr dk (+ (aget dr dk) (float (* dep (aget ar i)))))
               (aset dg dk (+ (aget dg dk) (float (* dep (aget ag i)))))
               (aset db dk (+ (aget db dk) (float (* dep (aget ab i)))))))))
