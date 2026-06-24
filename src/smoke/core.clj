@@ -86,11 +86,32 @@
           s)))))
 
 (defn draw [state]
-  (let [img ^PImage (:img state)]
+  (let [img ^PImage (:img state)
+        p   @params
+        w   (q/width) h (q/height)]
     (.loadPixels img)
-    (scene/render-pixels! state @params (.-pixels img))
+    (scene/render-pixels! state p (.-pixels img))
     (.updatePixels img)
-    (q/image img 0 0 (q/width) (q/height))))   ; scale render to fill the window/screen
+    (if (:depth-layer p)
+      ;; additive zoom-tunnel on black: nested copies, each larger (edges off-
+      ;; screen => no visible square) and dimmer, drawn back-to-front so the
+      ;; pattern appears to recede into depth behind the full-size front.
+      (let [n    (long (:depth-layers p 3))
+            step (double (:depth-scale p 0.35))
+            dim  (double (:depth-dim p 0.5))]
+        (q/background 0)
+        (q/blend-mode :add)
+        (doseq [i (range n 0 -1)]
+          (let [s  (+ 1.0 (* i step))
+                b  (int (* 255.0 (Math/pow dim i)))
+                bw (* w s) bh (* h s)
+                ox (* 0.5 (- w bw)) oy (* 0.5 (- h bh))]
+            (q/tint b b b)
+            (q/image img ox oy bw bh)))
+        (q/no-tint)
+        (q/image img 0 0 w h)              ; full front layer
+        (q/blend-mode :blend))
+      (q/image img 0 0 w h))))             ; scale render to fill the window/screen
 
 (defn- audio!
   "Call a smoke.audio fn by symbol if the ns is loaded (lazy => no ns cycle).

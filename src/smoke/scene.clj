@@ -135,6 +135,11 @@
    :audio-emit-amp 1.5   ; loudness -> extra emission: deposit scales by (1 + this * energy) (smoke.audio)
    :audio-white? false   ; audio mode: agents deposit WHITE, each freq band fades in its palette colour
    :audio-white-density 0.5 ; deposit scale in :audio-white? mode (white fills all 3 channels => dimmer)
+   ;; --- depth: nested zoomed + dimmer copies behind the main frame (a zoom tunnel) ---
+   :depth-layer true     ; draw the receding back layers for a sense of depth
+   :depth-layers 3       ; how many back copies (each larger & dimmer => recedes)
+   :depth-scale 0.35     ; extra zoom per layer (all > window => edges off-screen, no square)
+   :depth-dim   0.5      ; brightness falloff per layer (lower = darker behind, like less exposure)
    ;; --- "stars": bright colour dots flashing white at high-density peaks ---
    :stars       false
    :star-thresh 2.5      ; density (sum of channels) above which a peak sparks (higher = rarer/persistent)
