@@ -106,8 +106,13 @@
             (let [^doubles gp (aget raw (dec h))]
               (aset flux h (double (reduce (fn [a b] (+ (double a) (max 0.0 (- (aget g b) (aget gp b)))))
                                            0.0 (range bands))))))))
-      (let [fmax (areduce flux i m 0.0 (max m (aget flux i)))]
-        (dotimes [h nhops] (aset flux h (if (pos? fmax) (/ (aget flux h) fmax) 0.0))))
+      ;; normalise flux by the 95th percentile (not the max) so typical beats reach
+      ;; ~1.0 instead of being squashed by rare huge transients
+      (let [sorted (double-array flux)
+            _      (java.util.Arrays/sort sorted)
+            p95    (aget sorted (long (* 0.95 (dec nhops))))
+            norm   (if (pos? p95) p95 1.0)]
+        (dotimes [h nhops] (aset flux h (min 1.0 (/ (aget flux h) norm)))))
       {:hops     (mapv (fn [^doubles g]
                          (double-array (map (fn [b] (let [m (aget maxes b)]
                                                       (if (pos? m) (/ (aget g b) m) 0.0)))
@@ -160,6 +165,8 @@
 
 (def ^:private KICK-DECAY 0.80)       ; per-frame decay => ~150ms tail on each onset
 
+(def ^:private ipc-sock "/tmp/smoke-mpv.sock")  ; mpv JSON IPC socket (pause/seek control)
+
 (def ^:private player-opts
   {"mpv"    ["--no-video" "--no-terminal" "--really-quiet"]
    "ffplay" ["-nodisp" "-autoexit" "-loglevel" "quiet"]
@@ -171,7 +178,20 @@
 
 (defn- player-cmd [path]
   (when-let [p (some #(when (have? %) %) ["mpv" "ffplay" "paplay"])]
-    (into [p] (conj (player-opts p) path))))
+    (into [p] (conj (cond-> (player-opts p)
+                      (= p "mpv") (conj (str "--input-ipc-server=" ipc-sock)))  ; only mpv has IPC
+                    path))))
+
+(defn- mpv-cmd!
+  "Send one JSON command line to the running mpv via its IPC socket. No-op
+   (returns false) if the socket isn't there (e.g. ffplay/paplay fallback)."
+  [json]
+  (try
+    (with-open [ch (java.nio.channels.SocketChannel/open java.net.StandardProtocolFamily/UNIX)]
+      (.connect ch (java.net.UnixDomainSocketAddress/of ^String ipc-sock))
+      (.write ch (java.nio.ByteBuffer/wrap (.getBytes (str json "\n") "UTF-8"))))
+    true
+    (catch Throwable _ false)))
 
 (defn- tick! []
   (when-let [{:keys [analysis ^long t0]} @state]
@@ -180,13 +200,21 @@
           p     @core/params]
       (if gains
         (let [pal (or (:palette p) (:palette (scene/theme p)) [[1.0 1.0 1.0]])
+              ;; gate the onset so only real beats fire, then sharpen to 0..1
+              g   0.15
+              fv  (max 0.0 (/ (- (flux-at analysis secs) g) (- 1.0 g)))
               ;; beat: take the onset spike, hold it, let it decay for a visible kick
-              k   (max (* (double @kick) KICK-DECAY) (flux-at analysis secs))]
+              k   (max (* (double @kick) KICK-DECAY) fv)
+              ;; overall loudness (mean band gain) => emission boost (more density)
+              n   (alength gains)
+              energy (if (pos? n) (/ (areduce gains i s 0.0 (+ s (aget gains i))) n) 0.0)]
           (reset! kick k)
           (reset! scene/audio-keep (channel-keep gains pal (:keep p) (:audio-amp p) (:audio-floor p)))
-          (reset! scene/audio-dt (* (double (:audio-dt-amp p)) k)))
+          (reset! scene/audio-dt (* (double (:audio-dt-amp p)) k))
+          (reset! scene/audio-emit (* (double (:audio-emit-amp p)) energy)))
         (do (reset! scene/audio-keep nil)
             (reset! scene/audio-dt nil)
+            (reset! scene/audio-emit nil)
             (reset! kick 0.0))))))
 
 (defn stop!
@@ -198,7 +226,8 @@
   (reset! state nil)
   (reset! kick 0.0)
   (reset! scene/audio-keep nil)
-  (reset! scene/audio-dt nil))
+  (reset! scene/audio-dt nil)
+  (reset! scene/audio-emit nil))
 
 (defn start!
   "Analyse `path`, play it via an external player, and modulate per-colour keep
@@ -222,6 +251,28 @@
     ;; the render loop calls this once per frame => in lockstep, never starved
     (reset! scene/audio-hook (fn [] (try (tick!) (catch Throwable _))))
     {:dur-secs (:dur-secs analysis) :bands nb :rate (:rate analysis) :player (first cmd)}))
+
+(defn restart-track!
+  "Seek the audio back to the start and re-sync (wired to the sketch's 'r' key)."
+  []
+  (when @state
+    (mpv-cmd! "{\"command\":[\"seek\",0,\"absolute\"]}")
+    (mpv-cmd! "{\"command\":[\"set_property\",\"pause\",false]}")
+    (swap! state assoc :t0 (System/nanoTime) :paused-at nil)
+    (reset! kick 0.0)))
+
+(defn set-paused!
+  "Pause/resume the audio together with the sim (wired to the sketch's space key).
+   On resume, t0 is pushed forward by the paused duration so wall-clock stays in
+   sync with playback."
+  [paused?]
+  (when-let [st @state]
+    (mpv-cmd! (str "{\"command\":[\"set_property\",\"pause\"," (if paused? "true" "false") "]}"))
+    (if paused?
+      (swap! state assoc :paused-at (System/nanoTime))
+      (when-let [pa (:paused-at st)]
+        (swap! state (fn [s] (-> s (update :t0 + (- (System/nanoTime) (long pa)))
+                                 (assoc :paused-at nil))))))))
 
 (defn play-with-sim!
   "Open the sketch and start the audio together. Extra args go to `start!`."

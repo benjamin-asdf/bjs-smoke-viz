@@ -130,8 +130,9 @@
    :jet-color   [1.0 0.30 0.08]  ; live colour of the single source in the :jet1 theme
    :jet-count   3        ; number of moving sources in the :jets theme; extras get random palette colours
    :audio-amp   0.035    ; how much an audio band's energy raises its colour's keep (smoke.audio)
-   :audio-dt-amp 0.05    ; extra dt kicked in on each beat onset (smoke.audio); base :dt is ~0.04
+   :audio-dt-amp 0.15    ; extra dt kicked in on each beat onset (smoke.audio); base :dt is ~0.04
    :audio-floor 0.08     ; in audio mode, how far below :keep silence drops a colour (clears density)
+   :audio-emit-amp 1.5   ; loudness -> extra emission: deposit scales by (1 + this * energy) (smoke.audio)
    ;; --- "stars": bright colour dots flashing white at high-density peaks ---
    :stars       false
    :star-thresh 2.5      ; density (sum of channels) above which a peak sparks (higher = rarer/persistent)
@@ -157,6 +158,7 @@
 (defonce src-pos (atom nil))  ; {:theme kw :pos [...] :vel [...]} — live source state
 (defonce audio-keep (atom nil)) ; [kr kg kb] per-channel keep set by smoke.audio; nil => use scalar :keep
 (defonce audio-dt   (atom nil)) ; transient dt boost on beats, set by smoke.audio; nil/0 => none
+(defonce audio-emit (atom nil)) ; emission (deposit) multiplier from loudness, set by smoke.audio; nil/0 => none
 (defonce audio-hook (atom nil)) ; 0-arg fn run once per sim frame (smoke.audio drives keep/dt from playback)
 (defonce stars   (atom []))   ; persistent star particles {:x :y :vx :vy :ax :ay :r :g :b}
 (def ^:const STAR-MAX 700)
@@ -295,7 +297,10 @@
   (let [dt (+ (double (:dt p)) (double (or @audio-dt 0.0)))  ; beat onsets kick dt up briefly
         fl (f/vel-step fl (:visc p) dt (:buoy p))
         m  (mode p)]
-    (when (#{:smoke :trail :haze} m) (phys/step! (:phys fl) fl (assoc p :p-mode m)))
+    (when (#{:smoke :trail :haze} m)
+      (let [em (double (or @audio-emit 0.0))                ; louder audio => more smoke deposited
+            pp (assoc p :p-mode m :p-deposit (* (double (:p-deposit p)) (+ 1.0 em)))]
+        (phys/step! (:phys fl) fl pp)))
     (let [fl (f/advect-colors! fl dt)
           ;; audio layer overrides scalar keep with a per-colour [kr kg kb]
           fl (if-let [ak @audio-keep]

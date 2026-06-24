@@ -92,10 +92,20 @@
     (.updatePixels img)
     (q/image img 0 0 (q/width) (q/height))))   ; scale render to fill the window/screen
 
+(defn- audio!
+  "Call a smoke.audio fn by symbol if the ns is loaded (lazy => no ns cycle).
+   Used to drive mpv playback from the sketch's transport keys."
+  [sym & args]
+  (when-let [f (try (requiring-resolve sym) (catch Throwable _))]
+    (try (apply f args) (catch Throwable _))))
+
 (defn key-pressed [state event]
   (case (:key event)
-    :r       (assoc (scene/new-fluid @params) :img (:img state) :paused (:paused state))
-    :space   (update state :paused not)
+    :r       (do (audio! 'smoke.audio/restart-track!)   ; 'r' also restarts the audio from the top
+                 (assoc (scene/new-fluid @params) :img (:img state) :paused (:paused state)))
+    :space   (let [paused (not (:paused state))]
+               (audio! 'smoke.audio/set-paused! paused)  ; space pauses/resumes audio with the sim
+               (assoc state :paused paused))
     state))
 
 (defn start!
