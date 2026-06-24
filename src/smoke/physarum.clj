@@ -82,7 +82,8 @@
         wander (double (:p-wander p 0.0))
         so    (double (:p-sensor p)) sa (double (:p-sense-angle p))
         ra    (double (:p-turn p))   ss (double (:p-speed p))
-        dep   (double (:p-deposit p)) windk (double (:p-wind p))]
+        dep   (double (:p-deposit p)) windk (double (:p-wind p))
+        wdep  (* dep (double (:audio-white-density p 0.5)))]  ; dimmer deposit for white mode
     (dotimes [i cnt]
       (let [x (aget xs i) y (aget ys i) h (aget hs i)
             ;; each agent senses ITS OWN colour (weighted density) so the colours
@@ -118,9 +119,9 @@
           white?
           (let [bi (aget band i)
                 e  (if (< bi (alength gains)) (aget gains bi) 0.0)  ; 0 => white, 1 => full colour
-                er (* dep (- 1.0 (* e (- 1.0 (aget ar i)))))
-                eg (* dep (- 1.0 (* e (- 1.0 (aget ag i)))))
-                eb (* dep (- 1.0 (* e (- 1.0 (aget ab i)))))]
+                er (* wdep (- 1.0 (* e (- 1.0 (aget ar i)))))
+                eg (* wdep (- 1.0 (* e (- 1.0 (aget ag i)))))
+                eb (* wdep (- 1.0 (* e (- 1.0 (aget ab i)))))]
             (aset dr dk (+ (aget dr dk) (float er)))
             (aset dg dk (+ (aget dg dk) (float eg)))
             (aset db dk (+ (aget db dk) (float eb))))
