@@ -25,6 +25,7 @@
 (defonce last-state (atom nil))   ; latest sim state, for REPL inspection
 (defonce reset?     (atom false)) ; set true to re-seed the field next frame (controls window)
 (defonce pause-flip? (atom false)) ; set true to toggle pause next frame (controls window)
+(defonce last-opts  (atom nil))   ; last start! options, so restart! relaunches at same size
 
 (defn setup []
   (q/frame-rate 60)
@@ -102,7 +103,8 @@
      :size  N          — windowed at N x N px (defaults to scene/W)
    Handlers are #'vars so REPL redefinition takes effect live; relaunching
    disposes the old window (and resets the field)."
-  [& {:keys [fullscreen size]}]
+  [& {:keys [fullscreen size] :as opts}]
+  (reset! last-opts opts)   ; remembered so restart! can relaunch at the same size
   (when-let [s @sketch] (try (.dispose ^processing.core.PApplet s) (catch Exception _)))
   (let [dims (cond fullscreen (let [d (.getScreenSize (java.awt.Toolkit/getDefaultToolkit))]
                                 [(.width d) (.height d)])
@@ -122,6 +124,12 @@
     ;; bring up the steering panel in a second window (lazy require => no cycle)
     (try ((requiring-resolve 'smoke.controls/open!)) (catch Throwable _))
     @sketch))
+
+(defn restart!
+  "Dispose the sketch window and relaunch it at the last-used size/fullscreen.
+   Handy when the GL renderer freezes (run off the EDT, e.g. from a button)."
+  []
+  (apply start! (mapcat identity @last-opts)))
 
 ;; ---- REPL dev helpers -----------------------------------------------------
 

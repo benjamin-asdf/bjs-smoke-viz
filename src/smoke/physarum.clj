@@ -69,6 +69,10 @@
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
         ^floats trail (:trail phys) ^floats ttmp (:ttmp phys)
         trail? (= (:p-mode p) :trail)
+        ;; :haze => agents don't steer toward their trail (no networks); they
+        ;; random-wander and the fluid carries the colour they deposit => smoke.
+        haze?  (= (:p-mode p) :haze)
+        wander (double (:p-wander p 0.0))
         so    (double (:p-sensor p)) sa (double (:p-sense-angle p))
         ra    (double (:p-turn p))   ss (double (:p-speed p))
         dep   (double (:p-deposit p)) windk (double (:p-wind p))]
@@ -84,11 +88,15 @@
             cl (double (if trail? (aget trail kl) (+ (* wr (aget dr kl)) (* wg (aget dg kl)) (* wb (aget db kl)))))
             cc (double (if trail? (aget trail kc) (+ (* wr (aget dr kc)) (* wg (aget dg kc)) (* wb (aget db kc)))))
             cr (double (if trail? (aget trail kr) (+ (* wr (aget dr kr)) (* wg (aget dg kr)) (* wb (aget db kr)))))
-            h2 (cond
-                 (and (>= cc cl) (>= cc cr)) h
-                 (and (< cc cl) (< cc cr))   (if (< (double (rand)) 0.5) (- h ra) (+ h ra))
-                 (> cl cr)                   (- h ra)
-                 :else                       (+ h ra))
+            ;; :haze agents don't steer toward the trail; everyone gets optional
+            ;; random wander on top (slime keeps p-wander 0 => unchanged).
+            hsteer (if haze? h
+                       (cond
+                         (and (>= cc cl) (>= cc cr)) h
+                         (and (< cc cl) (< cc cr))   (if (< (double (rand)) 0.5) (- h ra) (+ h ra))
+                         (> cl cr)                   (- h ra)
+                         :else                       (+ h ra)))
+            h2 (if (pos? wander) (+ (double hsteer) (* wander 2.0 (- (double (rand)) 0.5))) (double hsteer))
             ix (long (wrap x n)) iy (long (wrap y n))
             wk (f/idx n ix iy)
             nx (wrap (+ x (* ss (Math/cos h2)) (* windk (aget u wk))) n)
