@@ -32,7 +32,10 @@
 ;;   :smoke — agents steer toward their own colour => coloured NETWORKS (slime)
 ;;   :haze  — agents don't steer, they wander => diffuse coloured SMOKE
 ;;   :trail — classic white transport network on a separate trail map
-(def summer [[1.0 0.05 0.70] [1.0 0.55 0.0] [0.20 1.0 0.25]])  ; the summerfest hues
+(def summer [[1.0 0.05 0.70] [1.0 0.55 0.0] [0.20 1.0 0.25]])  ; the summerfest hues (warm-skewed)
+;; separated R/G/B primaries (like :jets) so the physarum colours stay distinct
+;; instead of all skewing warm — gives vivid multi-colour smoke.
+(def rgb3   [[1.0 0.12 0.10] [0.10 0.45 1.0] [0.20 1.0 0.28]])
 
 (def themes
   {:jets    {:mode :sources
@@ -44,23 +47,23 @@
                         :motion {:type :brownian :base [0.5 0.55] :amp 0.0035}}]}
    ;; --- physarum-driven smoke, variations ---------------------------------
    :slime   {:mode :smoke    ; agents steer toward own colour => coloured networks
-             :palette summer
+             :palette rgb3
              :p-defaults {:p-count 3000 :p-sensor 9.0 :p-sense-angle 0.5 :p-turn 0.45
-                          :p-speed 1.2 :p-deposit 0.2 :p-wind 0.2 :p-wander 0.0
-                          :buoy 0.4 :keep 0.99 :expos 1.4}}
+                          :p-speed 1.2 :p-deposit 0.28 :p-wind 0.2 :p-wander 0.0
+                          :buoy 0.4 :keep 0.95 :expos 0.9 :saturation 3.5}}
    :haze    {:mode :haze     ; the smoke ITSELF is wandering agents => diffuse smoke, no networks
-             :palette summer
-             :p-defaults {:p-count 6000 :p-speed 1.0 :p-deposit 0.10 :p-wind 0.8 :p-wander 0.7
-                          :buoy 0.5 :keep 0.985 :expos 1.8}}
+             :palette rgb3
+             :p-defaults {:p-count 6000 :p-speed 1.0 :p-deposit 0.14 :p-wind 0.8 :p-wander 0.7
+                          :buoy 0.5 :keep 0.96 :expos 1.1 :saturation 3.0}}
    :swarm   {:mode :haze     ; smoke SOURCES that are agents: few, bright, wandering emitters
-             :palette summer
+             :palette rgb3
              :p-defaults {:p-count 600 :p-speed 1.8 :p-deposit 0.6 :p-wind 1.2 :p-wander 0.4
-                          :buoy 0.7 :keep 0.985 :expos 1.5}}
+                          :buoy 0.7 :keep 0.96 :expos 1.1 :saturation 2.8}}
    :rivers  {:mode :smoke    ; faint steering + wander => flowing strands between network and smoke
-             :palette summer
+             :palette rgb3
              :p-defaults {:p-count 4000 :p-sensor 16.0 :p-sense-angle 0.6 :p-turn 0.12
-                          :p-speed 1.3 :p-deposit 0.16 :p-wind 0.9 :p-wander 0.25
-                          :buoy 0.5 :keep 0.99 :expos 1.5}}
+                          :p-speed 1.3 :p-deposit 0.22 :p-wind 0.9 :p-wander 0.25
+                          :buoy 0.5 :keep 0.96 :expos 1.0 :saturation 3.2}}
    :network {:mode :trail
              :palette [[1.0 1.0 1.0]]
              :p-defaults {:p-count 3000 :p-sensor 9.0 :p-sense-angle 0.5 :p-turn 0.45
@@ -88,6 +91,7 @@
    :edge-margin 1        ; sponge-border width (cells); fades flow at edges (walls)
    :blur-passes 0        ; render-only density blur (0 = crisp)
    :expos       1.4      ; tonemap exposure per colour channel (lower = keeps colour, less white-out)
+   :saturation  1.0      ; render chroma boost (push channels from grey mean); >1 = more vivid
    :wind        4.0      ; wind strength (noise flow-field force on the smoke)
    :noise-scale 2.0      ; wind spatial frequency
    :noise-speed 0.012    ; how fast the wind field evolves
@@ -333,6 +337,9 @@
         netw   (double (if (= (mode p) :trail) (:p-bright p) 0.0))
         ^floats tl (tone-lut (:expos p))
         tscale (/ (double (dec TLUTN)) CHMAX)
+        ;; saturation: amplify each pixel's chroma around its mean so the dominant
+        ;; hue shows instead of washing to white. 1.0 = neutral; higher = vivid.
+        sat    (double (:saturation p 1.0))
         gscale (/ (double nm1) (double (dec w)))]
     (dotimes [oy w]
       (let [gy (* oy gscale) j0 (long gy) fy (- gy j0)
@@ -350,9 +357,10 @@
                       (* fy  (+ (* sx0 (aget bg k01)) (* fx (aget bg k11)))) tr)
                 cb (+ (* sy0 (+ (* sx0 (aget bb k00)) (* fx (aget bb k10))))
                       (* fy  (+ (* sx0 (aget bb k01)) (* fx (aget bb k11)))) tr)
-                ri (long (aget tl (min (dec TLUTN) (max 0 (long (* cr tscale))))))
-                gi (long (aget tl (min (dec TLUTN) (max 0 (long (* cg tscale))))))
-                bi (long (aget tl (min (dec TLUTN) (max 0 (long (* cb tscale))))))]
+                mean (* (/ 1.0 3.0) (+ cr cg cb))   ; push channels away from grey mean
+                ri (long (aget tl (min (dec TLUTN) (max 0 (long (* (+ mean (* sat (- cr mean))) tscale))))))
+                gi (long (aget tl (min (dec TLUTN) (max 0 (long (* (+ mean (* sat (- cg mean))) tscale))))))
+                bi (long (aget tl (min (dec TLUTN) (max 0 (long (* (+ mean (* sat (- cb mean))) tscale))))))]
             (aset px (+ ox row)
                   (unchecked-int (bit-or (unchecked-int 0xFF000000)
                                          (bit-shift-left ri 16) (bit-shift-left gi 8) bi)))))))

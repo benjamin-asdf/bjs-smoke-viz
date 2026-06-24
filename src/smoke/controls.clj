@@ -56,6 +56,7 @@
    [:section "Render"]
    [:blur-passes "blur passes"         0     5     :int]
    [:expos       "exposure"            0.2   10.0]
+   [:saturation  "saturation (vivid)"  1.0   6.0]
    [:section "Physarum (slime / haze / swarm / rivers / network)"]
    [:p-sensor    "sensor distance"     0.0   30.0]
    [:p-sense-angle "sensor angle"      0.0   1.5]
