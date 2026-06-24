@@ -51,15 +51,20 @@
               ^floats fx (:fx fl)
               ^floats fy (:fy fl)
               dx (- (q/mouse-x) (q/pmouse-x))
-              dy (- (q/mouse-y) (q/pmouse-y))]
-          (doseq [oi (range -3 4) oj (range -3 4)]
-            (let [ii (+ i oi) jj (+ j oj)]
-              (when (and (>= ii 0) (< ii n) (>= jj 0) (< jj n))
-                (let [k (f/idx n ii jj)]
+              dy (- (q/mouse-y) (q/pmouse-y))
+              r  (long 8)          ; brush radius in cells (bigger = more smoke per frame)
+              amp (float 0.9)]     ; peak density added at the centre
+          (doseq [oi (range (- r) (inc r)) oj (range (- r) (inc r))]
+            (let [ii (+ i oi) jj (+ j oj)
+                  d2 (+ (* oi oi) (* oj oj))]
+              (when (and (<= d2 (* r r)) (>= ii 0) (< ii n) (>= jj 0) (< jj n))
+                (let [k (f/idx n ii jj)
+                      ;; soft circular falloff: full at centre, fading to the rim
+                      e (* amp (float (- 1.0 (/ (double d2) (double (* r r))))))]
                   ;; paint a bright dollop of smoke (white) + a push
-                  (aset dr k (+ (aget dr k) (float 0.4)))
-                  (aset dg k (+ (aget dg k) (float 0.4)))
-                  (aset db k (+ (aget db k) (float 0.4)))
+                  (aset dr k (+ (aget dr k) e))
+                  (aset dg k (+ (aget dg k) e))
+                  (aset db k (+ (aget db k) e))
                   (aset fx k (+ (aget fx k) (float (* 3.0 dx))))
                   (aset fy k (+ (aget fy k) (float (* 3.0 dy)))))))))))))
 

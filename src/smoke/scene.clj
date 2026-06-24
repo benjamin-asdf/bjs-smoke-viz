@@ -33,15 +33,16 @@
 ;;   :haze  — agents don't steer, they wander => diffuse coloured SMOKE
 ;;   :trail — classic white transport network on a separate trail map
 (def summer [[1.0 0.05 0.70] [1.0 0.55 0.0] [0.20 1.0 0.25]])  ; the summerfest hues (warm-skewed)
+(def tropic [[1.0 0.05 0.70] [0.10 0.95 1.0] [1.0 0.55 0.0]])  ; summerfest with green->cyan: pink / cyan / orange
 ;; separated R/G/B primaries (like :jets) so the physarum colours stay distinct
 ;; instead of all skewing warm — gives vivid multi-colour smoke.
 (def rgb3   [[1.0 0.12 0.10] [0.10 0.45 1.0] [0.20 1.0 0.28]])
 
 (def themes
   {:jets    {:mode :sources
-             :sources [{:color [1.0 0.15 0.10] :emit 1.0 :r 3 :motion {:type :brownian :base [0.35 0.55] :amp 0.0035}}
-                       {:color [0.10 0.45 1.0] :emit 1.0 :r 3 :motion {:type :brownian :base [0.65 0.55] :amp 0.0035}}
-                       {:color [0.20 1.0 0.30] :emit 0.8 :r 2 :motion {:type :brownian :base [0.50 0.50] :amp 0.0040}}]}
+             :sources [{:color [1.0 0.15 0.10] :emit 1.0 :r 3 :motion {:type :brownian :base [0.35 0.55] :amp 0.0012}}
+                       {:color [0.10 0.45 1.0] :emit 1.0 :r 3 :motion {:type :brownian :base [0.65 0.55] :amp 0.0012}}
+                       {:color [0.20 1.0 0.30] :emit 0.8 :r 2 :motion {:type :brownian :base [0.50 0.50] :amp 0.0014}}]}
    :jet1    {:mode :sources   ; a SINGLE moving source; colour taken live from (:jet-color p)
              :sources [{:color [1.0 0.30 0.08] :emit 1.0 :r 3
                         :motion {:type :brownian :base [0.5 0.55] :amp 0.0035}}]}
@@ -81,6 +82,7 @@
    [:fire       [[1.0 0.12 0.0] [1.0 0.45 0.0] [1.0 0.8 0.15]]]
    [:ice        [[0.1 0.45 1.0] [0.2 0.8 1.0] [0.75 0.95 1.0]]]
    [:neon       [[1.0 0.0 0.75] [0.0 1.0 0.85] [0.85 1.0 0.0]]]
+   [:tropic     tropic]
    [:rainbow    [[1.0 0.1 0.1] [1.0 0.55 0.0] [0.9 1.0 0.0] [0.1 0.9 0.3] [0.1 0.5 1.0] [0.6 0.2 1.0]]]
    [:mono       [[1.0 1.0 1.0]]]])
 
@@ -92,9 +94,10 @@
    [:haze-smoke   (merge (theme-defaults :haze)    {:theme :haze    :palette rgb3})]
    [:summer-haze  (merge (theme-defaults :haze)    {:theme :haze    :palette summer})]
    [:rivers       (merge (theme-defaults :rivers)  {:theme :rivers  :palette rgb3})]
+   [:tropic-rivers (merge (theme-defaults :rivers) {:theme :rivers  :palette tropic})]
    [:swarm        (merge (theme-defaults :swarm)   {:theme :swarm   :palette rgb3})]
    [:white-net    (merge (theme-defaults :network) {:theme :network :keep 0.99 :expos 1.4 :saturation 1.0 :palette nil})]
-   [:jets         {:theme :jets :keep 0.99 :expos 1.4 :saturation 1.0 :palette nil}]])
+   [:jets         {:theme :jets :keep 0.995 :expos 1.4 :saturation 1.0 :palette nil}]])
 
 (defn preset-params
   "The params override map for a named preset (nil if unknown)."
@@ -125,6 +128,7 @@
    :theme       :slime   ; one of (keys themes)
    :palette     nil      ; agent colour palette override (nil => the theme's own); see scene/palettes
    :jet-color   [1.0 0.30 0.08]  ; live colour of the single source in the :jet1 theme
+   :jet-count   3        ; number of moving sources in the :jets theme; extras get random palette colours
    ;; --- "stars": bright colour dots flashing white at high-density peaks ---
    :stars       false
    :star-thresh 2.5      ; density (sum of channels) above which a peak sparks (higher = rarer/persistent)
@@ -198,18 +202,40 @@
                     (aset dg k (+ (aget dg k) eg))
                     (aset db k (+ (aget db k) eb))))))))))))
 
+(defn- build-jet-srcs
+  "Source list for the :jets theme sized to (:jet-count p). The first sources are
+   the theme's fixed RGB jets; any extras are spawned at random positions with a
+   random colour drawn from the active palette (`:palette p`, else rgb3)."
+  [p]
+  (let [base (vec (:sources (:jets themes)))
+        n    (long (max 1 (long (:jet-count p (count base)))))
+        pal  (vec (or (seq (:palette p)) rgb3))]
+    (if (<= n (count base))
+      (subvec base 0 n)
+      (into base
+            (repeatedly (- n (count base))
+                        #(hash-map :color (rand-nth pal) :emit 1.0 :r 3
+                                   :motion {:type :brownian
+                                            :base [(+ 0.2 (* 0.6 (double (rand)))) (+ 0.2 (* 0.6 (double (rand))))]
+                                            :amp 0.0012}))))))
+
 (defn- emit-jets! [fl p t]
-  (let [srcs (:sources (theme p))]
-    (when (or (nil? (:vel @src-pos))
-              (not= (count (:pos @src-pos)) (count srcs))
-              (not= (:theme p) (:theme @src-pos)))
-      (reset! src-pos {:theme (:theme p)
-                       :pos (mapv (comp :base :motion) srcs)
-                       :vel (mapv (constantly [0.0 0.0]) srcs)}))
-    (let [accels    (boids/accelerations (:pos @src-pos) (:vel @src-pos) (:boids p))
+  ;; :jets sizes its source list to (:jet-count p); jet1 keeps its single source.
+  (let [reseed? (or (nil? (:vel @src-pos))
+                    (not= (:theme p) (:theme @src-pos))
+                    (and (= (:theme p) :jets)
+                         (not= (long (:jet-count p 3)) (count (:srcs @src-pos)))))]
+    (when reseed?
+      (let [srcs (if (= (:theme p) :jets) (build-jet-srcs p) (:sources (theme p)))]
+        (reset! src-pos {:theme (:theme p)
+                         :srcs srcs
+                         :pos (mapv (comp :base :motion) srcs)
+                         :vel (mapv (constantly [0.0 0.0]) srcs)})))
+    (let [srcs      (:srcs @src-pos)
+          accels    (boids/accelerations (:pos @src-pos) (:vel @src-pos) (:boids p))
           steps     (mapv #(step-source %1 %2 %3 %4 t) srcs (:pos @src-pos) (:vel @src-pos) accels)
           positions (mapv first steps)]
-      (reset! src-pos {:theme (:theme p) :pos positions :vel (mapv second steps)})
+      (swap! src-pos assoc :pos positions :vel (mapv second steps))
       ;; :jet1 = single source whose colour is steered live via (:jet-color p)
       (let [srcs (if (and (= (:theme p) :jet1) (:jet-color p))
                    (mapv #(assoc % :color (:jet-color p)) srcs)

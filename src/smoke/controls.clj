@@ -216,6 +216,24 @@
     (.add parent r1)
     (.add parent r2)))
 
+(defn- jet-count-row
+  "Number of moving sources in the :jets theme. Extra jets (beyond the fixed RGB
+   three) spawn at random spots with a random colour from the active palette.
+   Changing the count re-seeds the jet sources next frame automatically."
+  [^JPanel parent]
+  (let [model (SpinnerNumberModel. (int (:jet-count @core/params)) (int 1) (int 30) (int 1))
+        spin  (JSpinner. model)
+        row   (JPanel. (BorderLayout. 6 0))]
+    (.addChangeListener spin
+                        (reify ChangeListener
+                          (stateChanged [_ _] (swap! core/params assoc :jet-count (.getValue spin)))))
+    (.setFont spin FONT)
+    (doto row
+      (.setAlignmentX 0.0)
+      (.add (doto (JLabel. "jet count (:jets theme; extras = random palette colour)") (.setFont FONT)) BorderLayout/WEST)
+      (.add spin BorderLayout/EAST))
+    (.add parent row)))
+
 (defn- count-row [^JPanel parent]
   (let [model  (SpinnerNumberModel. (int (:p-count @core/params)) (int 0) (int 60000) (int 500))
         spin   (JSpinner. model)
@@ -267,6 +285,7 @@
   (theme-row panel)
   (palette-row panel)
   (jet-row panel)
+  (jet-count-row panel)
   (buttons-row panel)
   (doseq [spec specs]
     (if (= (first spec) :section)
