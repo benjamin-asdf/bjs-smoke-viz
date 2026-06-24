@@ -132,11 +132,16 @@
    :audio-amp   0.035    ; how much an audio band's energy raises its colour's keep (smoke.audio)
    :audio-dt-amp 0.15    ; extra dt kicked in on each beat onset (smoke.audio); base :dt is ~0.04
    :audio-floor 0.08     ; in audio mode, how far below :keep silence drops a colour (clears density)
+   :audio-beat-every 4   ; accent every Nth detected beat (downbeat); others stay gentle
+   :audio-beat-accent 2.5 ; how much stronger the accented beat's dt kick is
    :audio-emit-amp 1.5   ; loudness -> extra emission: deposit scales by (1 + this * energy) (smoke.audio)
    :audio-white? false   ; audio mode: agents deposit WHITE, each freq band fades in its palette colour
    :audio-white-density 0.5 ; deposit scale in :audio-white? mode (white fills all 3 channels => dimmer)
+   :audio-agents? false  ; audio mode: agents keep their colour; each band ADDS intensity to its group
+   :audio-agent-amp 1.5  ; band energy -> extra deposit: colour-group deposit × (1 + this × energy)
+                         ; (at silence => exactly normal slime; loud band => that colour blooms)
    ;; --- depth: nested zoomed + dimmer copies behind the main frame (a zoom tunnel) ---
-   :depth-layer true     ; draw the receding back layers for a sense of depth
+   :depth-layer false    ; draw the receding back layers for a sense of depth (off by default)
    :depth-layers 3       ; how many back copies (each larger & dimmer => recedes)
    :depth-scale 0.35     ; extra zoom per layer (all > window => edges off-screen, no square)
    :depth-dim   0.5      ; brightness falloff per layer (lower = darker behind, like less exposure)

@@ -75,7 +75,9 @@
         ;; :audio-white? => deposit WHITE, fading in each agent's palette colour
         ;; by its freq band's gain (silent band => white, loud band => full colour)
         ^doubles gains (:audio-gains p)
-        white? (boolean (and gains (:audio-white? p)))
+        white?  (boolean (and gains (:audio-white? p)))
+        agents? (boolean (and gains (:audio-agents? p)))  ; keep colour, modulate group intensity
+        aamp    (double (:audio-agent-amp p 1.5))
         ;; :haze => agents don't steer toward their trail (no networks); they
         ;; random-wander and the fluid carries the colour they deposit => smoke.
         haze?  (= (:p-mode p) :haze)
@@ -116,6 +118,13 @@
         (cond
           trail?
           (aset trail dk (+ (aget trail dk) (float dep)))
+          agents?
+          (let [bi (aget band i)
+                e  (if (< bi (alength gains)) (aget gains bi) 0.0)
+                d  (* dep (+ 1.0 (* aamp e)))]   ; full colour always; band blooms its group
+            (aset dr dk (+ (aget dr dk) (float (* d (aget ar i)))))
+            (aset dg dk (+ (aget dg dk) (float (* d (aget ag i)))))
+            (aset db dk (+ (aget db dk) (float (* d (aget ab i))))))
           white?
           (let [bi (aget band i)
                 e  (if (< bi (alength gains)) (aget gains bi) 0.0)  ; 0 => white, 1 => full colour

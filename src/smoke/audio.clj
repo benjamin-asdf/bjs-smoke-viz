@@ -161,9 +161,12 @@
 ;; render thread (massive frame-rate drop). An external player + wall-clock sync
 ;; sidesteps all of that; we keep javax.sound only to DECODE for analysis.
 (defonce ^:private state (atom nil))  ; {:proc Process :analysis {..} :t0 <nanoTime>}
-(defonce ^:private kick  (atom 0.0))  ; decaying beat-kick envelope (0..1)
+(defonce ^:private kick   (atom 0.0)) ; decaying beat-kick envelope (0..1)
+(defonce ^:private beat-n (atom 0))   ; count of detected beats (for every-Nth accent)
+(defonce ^:private armed  (atom false)) ; true while inside a beat (debounces the onset trigger)
 
 (def ^:private KICK-DECAY 0.80)       ; per-frame decay => ~150ms tail on each onset
+(def ^:private KICK-ATTACK 0.25)      ; per-frame rise toward an onset => gentle attack, not a jump
 
 (def ^:private ipc-sock "/tmp/smoke-mpv.sock")  ; mpv JSON IPC socket (pause/seek control)
 
@@ -203,20 +206,37 @@
               ;; gate the onset so only real beats fire, then sharpen to 0..1
               g   0.15
               fv  (max 0.0 (/ (- (flux-at analysis secs) g) (- 1.0 g)))
-              ;; beat: take the onset spike, hold it, let it decay for a visible kick
-              k   (max (* (double @kick) KICK-DECAY) fv)
+              ;; count beats (rising-edge trigger, debounced); accent every Nth one
+              _   (when (and (not @armed) (> fv 0.30)) (reset! armed true) (swap! beat-n inc))
+              _   (when (< fv 0.12) (reset! armed false))
+              acc (if (zero? (mod @beat-n (long (:audio-beat-every p 4))))
+                    (double (:audio-beat-accent p 2.5)) 1.0)
+              fv* (* fv acc)
+              ;; beat: rise gently toward the (accented) onset, then decay — no hard jump
+              k   (let [pk (double @kick)]
+                    (max (* pk KICK-DECAY) (+ pk (* KICK-ATTACK (- fv* pk)))))
               ;; overall loudness (mean band gain) => emission boost (more density)
               n   (alength gains)
               energy (if (pos? n) (/ (areduce gains i s 0.0 (+ s (aget gains i))) n) 0.0)]
           (reset! kick k)
-          (if (:audio-white? p)
-            ;; white mode: agents fade white->colour from the raw band gains; keep stays scalar
+          (cond
+            ;; agents mode: gains drive per-colour-group deposit in physarum; keep scalar,
+            ;; NO global emit boost (the per-group bloom replaces it) => clean, not muddy
+            (:audio-agents? p)
             (do (reset! scene/audio-gains gains)
-                (reset! scene/audio-keep nil))
+                (reset! scene/audio-keep nil)
+                (reset! scene/audio-emit nil))
+            ;; white mode: agents fade white->colour from the raw band gains; keep scalar
+            (:audio-white? p)
+            (do (reset! scene/audio-gains gains)
+                (reset! scene/audio-keep nil)
+                (reset! scene/audio-emit (* (double (:audio-emit-amp p)) energy)))
+            ;; default: per-channel keep colouring
+            :else
             (do (reset! scene/audio-keep (channel-keep gains pal (:keep p) (:audio-amp p) (:audio-floor p)))
-                (reset! scene/audio-gains nil)))
-          (reset! scene/audio-dt (* (double (:audio-dt-amp p)) k))
-          (reset! scene/audio-emit (* (double (:audio-emit-amp p)) energy)))
+                (reset! scene/audio-gains nil)
+                (reset! scene/audio-emit (* (double (:audio-emit-amp p)) energy))))
+          (reset! scene/audio-dt (* (double (:audio-dt-amp p)) k)))
         (do (reset! scene/audio-keep nil)
             (reset! scene/audio-gains nil)
             (reset! scene/audio-dt nil)
@@ -230,7 +250,7 @@
   (when-let [{:keys [^Process proc]} @state]
     (try (.destroy proc) (catch Throwable _)))
   (reset! state nil)
-  (reset! kick 0.0)
+  (reset! kick 0.0) (reset! beat-n 0) (reset! armed false)
   (reset! scene/audio-keep nil)
   (reset! scene/audio-dt nil)
   (reset! scene/audio-emit nil))
@@ -265,7 +285,7 @@
     (mpv-cmd! "{\"command\":[\"seek\",0,\"absolute\"]}")
     (mpv-cmd! "{\"command\":[\"set_property\",\"pause\",false]}")
     (swap! state assoc :t0 (System/nanoTime) :paused-at nil)
-    (reset! kick 0.0)))
+    (reset! kick 0.0) (reset! beat-n 0) (reset! armed false)))
 
 (defn set-paused!
   "Pause/resume the audio together with the sim (wired to the sketch's space key).
