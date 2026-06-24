@@ -157,6 +157,18 @@
       (aset db i (* (aget db i) k))))
   f)
 
+(defn dissipate-colors-rgb!
+  "Fade each colour channel by its own keep factor (audio-reactive layer)."
+  [f kr kg kb]
+  (let [kr (float kr) kg (float kg) kb (float kb)
+        ^floats dr (:dr f) ^floats dg (:dg f) ^floats db (:db f)
+        sz (alength dr)]
+    (dotimes [i sz]
+      (aset dr i (* (aget dr i) kr))
+      (aset dg i (* (aget dg i) kg))
+      (aset db i (* (aget db i) kb))))
+  f)
+
 (defn edge-fade!
   "Absorbing sponge border: fade colour channels AND velocity to 0 within
    `margin` cells of any edge, so the periodic domain behaves like walls."

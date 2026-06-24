@@ -129,6 +129,7 @@
    :palette     nil      ; agent colour palette override (nil => the theme's own); see scene/palettes
    :jet-color   [1.0 0.30 0.08]  ; live colour of the single source in the :jet1 theme
    :jet-count   3        ; number of moving sources in the :jets theme; extras get random palette colours
+   :audio-amp   0.035    ; how much an audio band's energy raises its colour's keep (smoke.audio)
    ;; --- "stars": bright colour dots flashing white at high-density peaks ---
    :stars       false
    :star-thresh 2.5      ; density (sum of channels) above which a peak sparks (higher = rarer/persistent)
@@ -152,6 +153,7 @@
 
 (defonce frame   (atom 0))    ; frame counter, drives motion + wind time
 (defonce src-pos (atom nil))  ; {:theme kw :pos [...] :vel [...]} — live source state
+(defonce audio-keep (atom nil)) ; [kr kg kb] per-channel keep set by smoke.audio; nil => use scalar :keep
 (defonce stars   (atom []))   ; persistent star particles {:x :y :vx :vy :ax :ay :r :g :b}
 (def ^:const STAR-MAX 700)
 (def ^:const STAR-MINDIST2 100.0)  ; (10 px)^2 minimum spacing between stars
@@ -288,9 +290,12 @@
   (let [fl (f/vel-step fl (:visc p) (:dt p) (:buoy p))
         m  (mode p)]
     (when (#{:smoke :trail :haze} m) (phys/step! (:phys fl) fl (assoc p :p-mode m)))
-    (let [fl (-> fl
-                 (f/advect-colors! (:dt p))
-                 (f/dissipate-colors! (:keep p))
+    (let [fl (f/advect-colors! fl (:dt p))
+          ;; audio layer overrides scalar keep with a per-colour [kr kg kb]
+          fl (if-let [ak @audio-keep]
+               (f/dissipate-colors-rgb! fl (nth ak 0) (nth ak 1) (nth ak 2))
+               (f/dissipate-colors! fl (:keep p)))
+          fl (-> fl
                  (f/edge-fade! (:edge-margin p))
                  (f/compute-total!))]
       (when (:stars p) (update-stars! fl p))
