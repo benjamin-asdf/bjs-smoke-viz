@@ -209,8 +209,10 @@
               ;; count beats (rising-edge trigger, debounced); accent every Nth one
               _   (when (and (not @armed) (> fv 0.30)) (reset! armed true) (swap! beat-n inc))
               _   (when (< fv 0.12) (reset! armed false))
+              ;; every beat kicks at the base level; every Nth gets the stronger accent
               acc (if (zero? (mod @beat-n (long (:audio-beat-every p 4))))
-                    (double (:audio-beat-accent p 2.5)) 1.0)
+                    (double (:audio-beat-accent p 3.0))
+                    (double (:audio-beat-base p 2.0)))
               fv* (* fv acc)
               ;; beat: rise gently toward the (accented) onset, then decay — no hard jump
               k   (let [pk (double @kick)]
