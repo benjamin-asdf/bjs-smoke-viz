@@ -50,7 +50,7 @@
              :palette rgb3
              :p-defaults {:p-count 3000 :p-sensor 9.0 :p-sense-angle 0.5 :p-turn 0.45
                           :p-speed 1.2 :p-deposit 0.28 :p-wind 0.2 :p-wander 0.0
-                          :buoy 0.4 :keep 0.95 :expos 0.9 :saturation 3.5}}
+                          :buoy 0.4 :keep 0.98 :expos 0.9 :saturation 3.5}}
    :haze    {:mode :haze     ; the smoke ITSELF is wandering agents => diffuse smoke, no networks
              :palette rgb3
              :p-defaults {:p-count 6000 :p-speed 1.0 :p-deposit 0.14 :p-wind 0.8 :p-wander 0.7
@@ -74,6 +74,33 @@
   [theme-kw]
   (:p-defaults (get themes theme-kw)))
 
+;; named agent-colour palettes for the physarum themes (controls "palette" dropdown)
+(def palettes
+  [[:rgb        rgb3]
+   [:summerfest summer]
+   [:fire       [[1.0 0.12 0.0] [1.0 0.45 0.0] [1.0 0.8 0.15]]]
+   [:ice        [[0.1 0.45 1.0] [0.2 0.8 1.0] [0.75 0.95 1.0]]]
+   [:neon       [[1.0 0.0 0.75] [0.0 1.0 0.85] [0.85 1.0 0.0]]]
+   [:rainbow    [[1.0 0.1 0.1] [1.0 0.55 0.0] [0.9 1.0 0.0] [0.1 0.9 0.3] [0.1 0.5 1.0] [0.6 0.2 1.0]]]
+   [:mono       [[1.0 1.0 1.0]]]])
+
+;; named full-look presets (theme + params) for the controls "preset" dropdown.
+;; :galaxy-slime is the saved hero look (vivid slime, denser keep).
+(def presets
+  [[:galaxy-slime (merge (theme-defaults :slime)   {:theme :slime   :keep 0.98 :palette rgb3})]
+   [:summer-slime (merge (theme-defaults :slime)   {:theme :slime   :keep 0.98 :palette summer})]
+   [:haze-smoke   (merge (theme-defaults :haze)    {:theme :haze    :palette rgb3})]
+   [:summer-haze  (merge (theme-defaults :haze)    {:theme :haze    :palette summer})]
+   [:rivers       (merge (theme-defaults :rivers)  {:theme :rivers  :palette rgb3})]
+   [:swarm        (merge (theme-defaults :swarm)   {:theme :swarm   :palette rgb3})]
+   [:white-net    (merge (theme-defaults :network) {:theme :network :keep 0.99 :expos 1.4 :saturation 1.0 :palette nil})]
+   [:jets         {:theme :jets :keep 0.99 :expos 1.4 :saturation 1.0 :palette nil}]])
+
+(defn preset-params
+  "The params override map for a named preset (nil if unknown)."
+  [preset-kw]
+  (some (fn [[k v]] (when (= k preset-kw) v)) presets))
+
 ;; the "summerfest" palette — the saturated hues used by the :slime theme
 (def summerfest
   [[:pink   [1.0  0.05 0.70]]
@@ -87,15 +114,16 @@
   {:dt          0.04     ; sim speed — lower = slower smoke
    :visc        0.0001   ; spectral viscosity (exp(-|k|^2 dt visc)); higher = smoother
    :buoy        0.4      ; buoyancy (rise speed), force per unit total density
-   :keep        0.99     ; density kept per frame (<1 => soft fade)
+   :keep        0.98     ; density kept per frame (<1 => soft fade); higher = denser/more persistent
    :edge-margin 1        ; sponge-border width (cells); fades flow at edges (walls)
    :blur-passes 0        ; render-only density blur (0 = crisp)
-   :expos       1.4      ; tonemap exposure per colour channel (lower = keeps colour, less white-out)
-   :saturation  1.0      ; render chroma boost (push channels from grey mean); >1 = more vivid
+   :expos       0.9      ; tonemap exposure per colour channel (lower = keeps colour, less white-out)
+   :saturation  3.5      ; render chroma boost (push channels from grey mean); >1 = more vivid
    :wind        4.0      ; wind strength (noise flow-field force on the smoke)
    :noise-scale 2.0      ; wind spatial frequency
    :noise-speed 0.012    ; how fast the wind field evolves
    :theme       :slime   ; one of (keys themes)
+   :palette     nil      ; agent colour palette override (nil => the theme's own); see scene/palettes
    :jet-color   [1.0 0.30 0.08]  ; live colour of the single source in the :jet1 theme
    ;; --- "stars": bright colour dots flashing white at high-density peaks ---
    :stars       false
@@ -225,7 +253,7 @@
   [p]
   (reset! stars [])
   (assoc (f/make-fluid N)
-         :phys (phys/make N (:p-count p) (or (:palette (theme p)) [[1.0 1.0 1.0]]))))
+         :phys (phys/make N (:p-count p) (or (:palette p) (:palette (theme p)) [[1.0 1.0 1.0]]))))
 
 (defn advance
   "One tick: velocity → (Physarum emission for :slime/:network) → advect/dissipate

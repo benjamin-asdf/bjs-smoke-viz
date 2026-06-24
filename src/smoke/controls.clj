@@ -124,6 +124,36 @@
       (.add combo BorderLayout/CENTER))
     (.add parent row)))
 
+(defn- chooser-row
+  "A labelled dropdown over `items` ([kw value] pairs). On select, calls
+   (apply! value) then re-seeds + refreshes the panel."
+  [^JPanel parent label items apply!]
+  (let [combo (JComboBox. (into-array String (mapv (comp name first) items)))
+        row   (JPanel. (BorderLayout. 6 0))]
+    (.setFont combo FONT)
+    (.setSelectedIndex combo -1)   ; no auto-fire on build
+    (.addActionListener combo
+                        (reify ActionListener
+                          (actionPerformed [_ _]
+                            (let [i (.getSelectedIndex combo)]
+                              (when (>= i 0)
+                                (apply! (second (nth items i)))
+                                (reset! core/reset? true)
+                                (refresh!))))))
+    (doto row
+      (.setAlignmentX 0.0)
+      (.add (doto (JLabel. ^String label) (.setFont FONT)) BorderLayout/WEST)
+      (.add combo BorderLayout/CENTER))
+    (.add parent row)))
+
+(defn- preset-row [^JPanel parent]
+  (chooser-row parent "preset" scene/presets
+               (fn [params] (swap! core/params merge params))))
+
+(defn- palette-row [^JPanel parent]
+  (chooser-row parent "palette (agents)" scene/palettes
+               (fn [colours] (swap! core/params assoc :palette colours))))
+
 (defn- ->awt ^Color [[r g b]]
   (Color. (float (min 1.0 (double r))) (float (min 1.0 (double g))) (float (min 1.0 (double b)))))
 (defn- ->rgb [^Color c]
@@ -233,7 +263,9 @@
 
 (defn- populate! [^JPanel panel]
   (section panel "Scene")
+  (preset-row panel)
   (theme-row panel)
+  (palette-row panel)
   (jet-row panel)
   (buttons-row panel)
   (doseq [spec specs]
