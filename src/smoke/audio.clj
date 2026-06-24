@@ -1,8 +1,10 @@
 (ns smoke.audio
   "Audio-reactive layer. Pre-analyse a WAV/AIFF file into a per-hop timeline of
-   frequency-band gains (reusing the JTransforms FFT), then play the clip and,
-   on a 60 Hz timer, modulate the smoke's per-colour `keep` from the live band
-   energy.
+   frequency-band gains (reusing the JTransforms FFT), play it via an EXTERNAL
+   player (mpv/ffplay/paplay) and, once per render frame, modulate the smoke's
+   per-colour `keep` (and dt on beats) from the live band energy. Playback is
+   external + wall-clock-synced because javax.sound's Clip blocks/contends badly
+   on PipeWire/ALSA; we use javax.sound only to decode for analysis.
 
    Bands map onto the ACTIVE PALETTE: band i drives palette colour i. Since the
    density field is plain R/G/B (no per-palette-colour separation), each band's
@@ -18,10 +20,10 @@
      ffmpeg -i song.mp3 song.wav"
   (:require [smoke.core :as core]
             [smoke.scene :as scene])
-  (:import [javax.sound.sampled AudioSystem AudioFormat AudioFormat$Encoding Clip]
+  (:import [javax.sound.sampled AudioSystem AudioFormat AudioFormat$Encoding]
            [org.jtransforms.fft DoubleFFT_1D]
            [java.io File]
-           [java.util Timer TimerTask]))
+           [java.lang ProcessBuilder$Redirect]))
 
 (set! *warn-on-reflection* true)
 
@@ -93,16 +95,25 @@
                                       (recur (inc k) (+ acc (Math/sqrt (+ (* re re) (* im im))))))
                                     (/ acc (double (max 1 (- b1 b0))))))))))
           (aset raw h g))))
-    ;; normalise each band over the track by its peak
-    (let [maxes (double-array bands)]
+    ;; normalise each band over the track by its peak; onset flux = summed
+    ;; positive band-energy increase between hops (beat/onset detector)
+    (let [maxes (double-array bands)
+          flux  (double-array nhops)]
       (dotimes [h nhops]
         (let [^doubles g (aget raw h)]
-          (dotimes [b bands] (when (> (aget g b) (aget maxes b)) (aset maxes b (aget g b))))))
+          (dotimes [b bands] (when (> (aget g b) (aget maxes b)) (aset maxes b (aget g b))))
+          (when (pos? h)
+            (let [^doubles gp (aget raw (dec h))]
+              (aset flux h (double (reduce (fn [a b] (+ (double a) (max 0.0 (- (aget g b) (aget gp b)))))
+                                           0.0 (range bands))))))))
+      (let [fmax (areduce flux i m 0.0 (max m (aget flux i)))]
+        (dotimes [h nhops] (aset flux h (if (pos? fmax) (/ (aget flux h) fmax) 0.0))))
       {:hops     (mapv (fn [^doubles g]
                          (double-array (map (fn [b] (let [m (aget maxes b)]
                                                       (if (pos? m) (/ (aget g b) m) 0.0)))
                                             (range bands))))
                        raw)
+       :flux     flux
        :hop-secs (/ 1.0 (double fps))
        :bands    bands
        :rate     rate
@@ -112,15 +123,19 @@
 (defn- channel-keep
   "Per-channel keep [kr kg kb] from band `gains` and the active `palette`.
    Each band's gain is weighted by its palette colour's RGB content, so a loud
-   band raises the keep of the channels that make up its colour."
-  [^doubles gains palette base amp]
-  (let [pal (vec palette)
-        n   (min (count pal) (alength gains))]
+   band raises the keep of the channels that make up its colour. `contrib` maps
+   from a silence floor (base - floor, smoke fades to near-nothing) up to a loud
+   ceiling (base + amp, denser/more persistent)."
+  [^doubles gains palette base amp floor]
+  (let [pal  (vec palette)
+        n    (min (count pal) (alength gains))
+        lo   (- (double base) (double floor))
+        span (+ (double floor) (double amp))]
     (mapv (fn [ch]
-            (let [num (reduce (fn [a i] (+ a (* (aget gains i) (double (nth (nth pal i) ch))))) 0.0 (range n))
-                  den (reduce (fn [a i] (+ a (double (nth (nth pal i) ch)))) 0.0 (range n))
+            (let [num (reduce (fn [a i] (+ (double a) (* (aget gains i) (double (nth (nth pal i) ch))))) 0.0 (range n))
+                  den (reduce (fn [a i] (+ (double a) (double (nth (nth pal i) ch)))) 0.0 (range n))
                   contrib (if (pos? den) (/ num den) 0.0)]
-              (min 0.999 (+ (double base) (* (double amp) contrib)))))
+              (-> (+ lo (* span contrib)) (max 0.0) (min 0.999))))
           [0 1 2])))
 
 (defn- gains-at
@@ -129,31 +144,66 @@
   (let [idx (long (/ (double secs) (double hop-secs)))]
     (when (< idx (count hops)) (nth hops idx))))
 
+(defn- flux-at
+  "Onset/beat strength (0..1) at playback time `secs`, or 0 past the end."
+  [{:keys [^doubles flux hop-secs]} secs]
+  (let [idx (long (/ (double secs) (double hop-secs)))]
+    (if (and flux (< idx (alength flux))) (aget flux idx) 0.0)))
+
 ;; ---- player ----------------------------------------------------------------
-(defonce ^:private state (atom nil))  ; {:clip Clip :analysis {..} :timer Timer}
+;; Audio is played by an EXTERNAL process, not javax.sound's Clip: on PipeWire/
+;; ALSA backends Clip.open/close block for many seconds and contend with the
+;; render thread (massive frame-rate drop). An external player + wall-clock sync
+;; sidesteps all of that; we keep javax.sound only to DECODE for analysis.
+(defonce ^:private state (atom nil))  ; {:proc Process :analysis {..} :t0 <nanoTime>}
+(defonce ^:private kick  (atom 0.0))  ; decaying beat-kick envelope (0..1)
+
+(def ^:private KICK-DECAY 0.80)       ; per-frame decay => ~150ms tail on each onset
+
+(def ^:private player-opts
+  {"mpv"    ["--no-video" "--no-terminal" "--really-quiet"]
+   "ffplay" ["-nodisp" "-autoexit" "-loglevel" "quiet"]
+   "paplay" []})
+
+(defn- have? [cmd]
+  (try (zero? (.waitFor (.start (ProcessBuilder. ^java.util.List ["sh" "-c" (str "command -v " cmd)]))))
+       (catch Throwable _ false)))
+
+(defn- player-cmd [path]
+  (when-let [p (some #(when (have? %) %) ["mpv" "ffplay" "paplay"])]
+    (into [p] (conj (player-opts p) path))))
 
 (defn- tick! []
-  (when-let [{:keys [^Clip clip analysis]} @state]
-    (let [secs  (/ (.getMicrosecondPosition clip) 1.0e6)
-          gains (gains-at analysis secs)]
+  (when-let [{:keys [analysis ^long t0]} @state]
+    (let [secs  (/ (- (System/nanoTime) t0) 1.0e9)
+          gains (gains-at analysis secs)
+          p     @core/params]
       (if gains
-        (let [p   @core/params
-              pal (or (:palette p) (:palette (scene/theme p)) [[1.0 1.0 1.0]])]
-          (reset! scene/audio-keep (channel-keep gains pal (:keep p) (:audio-amp p))))
-        (reset! scene/audio-keep nil)))))
+        (let [pal (or (:palette p) (:palette (scene/theme p)) [[1.0 1.0 1.0]])
+              ;; beat: take the onset spike, hold it, let it decay for a visible kick
+              k   (max (* (double @kick) KICK-DECAY) (flux-at analysis secs))]
+          (reset! kick k)
+          (reset! scene/audio-keep (channel-keep gains pal (:keep p) (:audio-amp p) (:audio-floor p)))
+          (reset! scene/audio-dt (* (double (:audio-dt-amp p)) k)))
+        (do (reset! scene/audio-keep nil)
+            (reset! scene/audio-dt nil)
+            (reset! kick 0.0))))))
 
 (defn stop!
   "Stop playback and hand the smoke back to its scalar :keep."
   []
-  (when-let [{:keys [^Clip clip ^Timer timer]} @state]
-    (when timer (.cancel timer))
-    (try (.stop clip) (.close clip) (catch Exception _)))
+  (reset! scene/audio-hook nil)
+  (when-let [{:keys [^Process proc]} @state]
+    (try (.destroy proc) (catch Throwable _)))
   (reset! state nil)
-  (reset! scene/audio-keep nil))
+  (reset! kick 0.0)
+  (reset! scene/audio-keep nil)
+  (reset! scene/audio-dt nil))
 
 (defn start!
-  "Analyse + play `path`, modulating per-colour keep from its spectrum. Buckets
-   default to the active palette's colour count. Options:
+  "Analyse `path`, play it via an external player, and modulate per-colour keep
+   (and dt on beats) from its spectrum. Buckets default to the active palette's
+   colour count. Options:
      :amp   — override (:audio-amp params) for this run
      :bands — override the bucket count"
   [path & {:keys [amp bands]}]
@@ -162,16 +212,16 @@
   (let [p        @core/params
         nb       (or bands (max 1 (count (or (:palette p) (:palette (scene/theme p)) [1]))))
         analysis (analyze path :bands nb :fps 60)
-        clip     (AudioSystem/getClip)]
-    (with-open [in (AudioSystem/getAudioInputStream (File. ^String path))]
-      (.open clip in))
-    (let [timer (Timer. "smoke-audio-tick" true)]
-      (.scheduleAtFixedRate timer
-                            (proxy [TimerTask] [] (run [] (try (tick!) (catch Throwable _))))
-                            (long 0) (long 16))
-      (reset! state {:clip clip :analysis analysis :timer timer}))
-    (.start clip)
-    {:dur-secs (:dur-secs analysis) :bands nb :rate (:rate analysis)}))
+        cmd      (or (player-cmd path)
+                     (throw (ex-info "No external audio player found (mpv/ffplay/paplay)" {})))
+        proc     (.start (doto (ProcessBuilder. ^java.util.List cmd)
+                           (.redirectOutput ProcessBuilder$Redirect/DISCARD)
+                           (.redirectError ProcessBuilder$Redirect/DISCARD)))
+        t0       (System/nanoTime)]
+    (reset! state {:proc proc :analysis analysis :t0 t0})
+    ;; the render loop calls this once per frame => in lockstep, never starved
+    (reset! scene/audio-hook (fn [] (try (tick!) (catch Throwable _))))
+    {:dur-secs (:dur-secs analysis) :bands nb :rate (:rate analysis) :player (first cmd)}))
 
 (defn play-with-sim!
   "Open the sketch and start the audio together. Extra args go to `start!`."

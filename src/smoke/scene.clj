@@ -130,6 +130,8 @@
    :jet-color   [1.0 0.30 0.08]  ; live colour of the single source in the :jet1 theme
    :jet-count   3        ; number of moving sources in the :jets theme; extras get random palette colours
    :audio-amp   0.035    ; how much an audio band's energy raises its colour's keep (smoke.audio)
+   :audio-dt-amp 0.05    ; extra dt kicked in on each beat onset (smoke.audio); base :dt is ~0.04
+   :audio-floor 0.08     ; in audio mode, how far below :keep silence drops a colour (clears density)
    ;; --- "stars": bright colour dots flashing white at high-density peaks ---
    :stars       false
    :star-thresh 2.5      ; density (sum of channels) above which a peak sparks (higher = rarer/persistent)
@@ -154,6 +156,8 @@
 (defonce frame   (atom 0))    ; frame counter, drives motion + wind time
 (defonce src-pos (atom nil))  ; {:theme kw :pos [...] :vel [...]} — live source state
 (defonce audio-keep (atom nil)) ; [kr kg kb] per-channel keep set by smoke.audio; nil => use scalar :keep
+(defonce audio-dt   (atom nil)) ; transient dt boost on beats, set by smoke.audio; nil/0 => none
+(defonce audio-hook (atom nil)) ; 0-arg fn run once per sim frame (smoke.audio drives keep/dt from playback)
 (defonce stars   (atom []))   ; persistent star particles {:x :y :vx :vy :ax :ay :r :g :b}
 (def ^:const STAR-MAX 700)
 (def ^:const STAR-MINDIST2 100.0)  ; (10 px)^2 minimum spacing between stars
@@ -287,10 +291,12 @@
   "One tick: velocity → (Physarum emission for :slime/:network) → advect/dissipate
    → spawn/drift persistent stars."
   [fl p]
-  (let [fl (f/vel-step fl (:visc p) (:dt p) (:buoy p))
+  (when-let [h @audio-hook] (h))  ; refresh audio-keep/audio-dt from playback, in lockstep with frames
+  (let [dt (+ (double (:dt p)) (double (or @audio-dt 0.0)))  ; beat onsets kick dt up briefly
+        fl (f/vel-step fl (:visc p) dt (:buoy p))
         m  (mode p)]
     (when (#{:smoke :trail :haze} m) (phys/step! (:phys fl) fl (assoc p :p-mode m)))
-    (let [fl (f/advect-colors! fl (:dt p))
+    (let [fl (f/advect-colors! fl dt)
           ;; audio layer overrides scalar keep with a per-colour [kr kg kb]
           fl (if-let [ak @audio-keep]
                (f/dissipate-colors-rgb! fl (nth ak 0) (nth ak 1) (nth ak 2))
