@@ -7,6 +7,10 @@ Rendered with [Quil](http://quil.info/).
 
 ![slime](assets/slime.gif)
 
+<video src="assets/box.mp4" controls width="100%"></video>
+
+[▶ box.mp4](assets/box.mp4)
+
 ## Run
 
 ```bash

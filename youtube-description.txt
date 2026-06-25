@@ -1,0 +1,44 @@
+DubVibe (HU) & Giancarlo Di Chiara — "Concentrate" [Music4Aliens]
+Audio-reactive generative visuals
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎵  MUSIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Track:   Concentrate
+Artists: DubVibe (HU) & Giancarlo Di Chiara
+Label:   Music4Aliens
+Genre:   Techno (~132 BPM)
+
+All music © the respective artists & Music4Aliens. I don't own the music —
+it's used here to credit and support the release. Please follow and buy:
+
+• Label — Music4Aliens:      https://music4aliens.bandcamp.com
+• Giancarlo Di Chiara:       https://soundcloud.com/giancarlodichiara
+• DubVibe (HU):              https://www.beatport.com/artist/dubvibe-hu/1168600
+• This track on SoundCloud:  https://soundcloud.com/giancarlodichiara/dubvibe-hu-giancarlo-di-chiara
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌫️  VISUALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Real-time generative smoke, painted by the music. Nothing is pre-rendered —
+every frame is simulated live.
+
+Under the hood:
+ • A spectral fluid solver (Jos Stam's "Stable Fluids", FFT formulation)
+   carries the smoke.
+ • Thousands of Physarum (slime-mould) agents paint into it, growing the
+   flowing, vein-like structures.
+ • The track is analysed live and mapped onto the image:
+     – each frequency band drives a colour — silence stays white, energy
+       fades the palette in (bass / mid / treble → their own hues)
+     – beat onsets kick the simulation's time-step, so the smoke lurches
+       forward on every hit, then eases back
+     – overall loudness feeds emission and per-colour persistence, so loud
+       passages bloom denser and brighter
+
+Built in Clojure + Quil (OpenGL).
+Code / source:  https://github.com/benjamin-asdf/bjs-smoke-viz
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#Techno #Music4Aliens #GenerativeArt #Visualizer #AudioReactive
+#FluidSimulation #SlimeMould #Physarum #Clojure #LiveVisuals

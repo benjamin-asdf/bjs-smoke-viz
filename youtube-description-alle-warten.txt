@@ -1,0 +1,47 @@
+Daniel Neuland & Sahra Bass — "Alle Warten" [Tipping Point]
+Audio-reactive generative visuals
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎵  MUSIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Track:   Alle Warten
+Artists: Daniel Neuland & Sahra Bass
+Label:   Tipping Point (distributed by Proton LLC)
+Genre:   Indie Dance (122 BPM)
+Release: 2024-11-01
+
+℗ 2024 Tipping Point. All music © the respective artists & Tipping Point —
+I don't own the music, it's used here to credit and support the release.
+Please follow and buy:
+
+• Label — Tipping Point:   https://soundcloud.com/tipping-point-music
+• Premiere (SoundCloud):   https://soundcloud.com/tipping-point-music/daniel-neuland-sahra-bass-alle-warten-premiere
+• Beatport:                https://www.beatport.com/release/alle-warten/4774583
+• Apple Music:             https://music.apple.com/album/alle-warten-single/1773869137
+• Sahra Bass:              https://soundcloud.com/sahrabass
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌫️  VISUALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Real-time generative smoke, painted by the music. Nothing is pre-rendered —
+every frame is simulated live.
+
+Under the hood:
+ • A spectral fluid solver (Jos Stam's "Stable Fluids", FFT formulation)
+   carries the smoke.
+ • Thousands of Physarum (slime-mould) agents paint into it, growing the
+   flowing, vein-like structures.
+ • The track is analysed live and mapped onto the image:
+     – each frequency band drives a colour — silence stays white, energy
+       fades the palette in (bass / mid / treble → their own hues)
+     – beat onsets kick the simulation's time-step, so the smoke lurches
+       forward on every hit, then eases back
+     – overall loudness feeds emission and per-colour persistence, so loud
+       passages bloom denser and brighter
+
+Built in Clojure + Quil (OpenGL).
+Code / source:  https://github.com/benjamin-asdf/bjs-smoke-viz
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#IndieDance #TippingPoint #GenerativeArt #Visualizer #AudioReactive
+#FluidSimulation #SlimeMould #Physarum #Clojure #LiveVisuals
