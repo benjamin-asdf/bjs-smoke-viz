@@ -19,7 +19,8 @@
    Java only decodes PCM WAV/AIFF. Convert other formats first, e.g.
      ffmpeg -i song.mp3 song.wav"
   (:require [smoke.core :as core]
-            [smoke.scene :as scene])
+            [smoke.scene :as scene]
+            [smoke.physarum :as phys])
   (:import [javax.sound.sampled AudioSystem AudioFormat AudioFormat$Encoding]
            [org.jtransforms.fft DoubleFFT_1D]
            [java.io File]
@@ -160,6 +161,24 @@
   (let [idx (long (/ (double secs) (double hop-secs)))]
     (when (< idx (count hops)) (nth hops idx))))
 
+(defn- hsv->rgb
+  "[r g b] in 0..1 from hue/sat/val in 0..1."
+  [h s v]
+  (let [rgb (java.awt.Color/HSBtoRGB (float h) (float s) (float v))]
+    [(/ (bit-and (bit-shift-right rgb 16) 0xff) 255.0)
+     (/ (bit-and (bit-shift-right rgb 8) 0xff) 255.0)
+     (/ (bit-and rgb 0xff) 255.0)]))
+
+(defn- vivid-palette
+  "`n` vivid colours evenly spaced around the hue wheel, starting from a
+   seed-random base hue — so every seed gives a distinct but harmonious set."
+  [^long seed ^long n]
+  (let [rng (java.util.Random. seed)
+        h0  (.nextDouble rng)
+        nn  (max 1 n)]
+    (mapv (fn [i] (hsv->rgb (mod (+ h0 (/ (double i) nn)) 1.0) 1.0 1.0))
+          (range nn))))
+
 (defn- flux-at
   "Onset/beat strength (0..1) at playback time `secs`, or 0 past the end."
   [{:keys [^doubles flux hop-secs]} secs]
@@ -175,6 +194,29 @@
 (defonce ^:private kick   (atom 0.0)) ; decaying beat-kick envelope (0..1)
 (defonce ^:private beat-n (atom 0))   ; count of detected beats (for every-Nth accent)
 (defonce ^:private armed  (atom false)) ; true while inside a beat (debounces the onset trigger)
+(defonce ^:private color-seed (atom 0)) ; RNG seed behind the current colour shuffle (re-rolled on 'r')
+
+(defn- base-palette [p]
+  (or (:palette p) (:palette (scene/theme p)) [[1.0 1.0 1.0]]))
+
+(defn- reroll-colors!
+  "Pick a fresh random seed and publish a new set of `nb` vivid hues into
+   scene/audio-palette, so the next agents built from it (every 'r', and offline
+   renders) wear a freshly generated, evenly-spaced colour set."
+  [^long nb]
+  (let [seed (.nextLong (java.util.Random.))]
+    (reset! color-seed seed)
+    (reset! scene/audio-palette (vivid-palette seed nb))
+    seed))
+
+(defn- recolor-live!
+  "Repaint the agents in the running sketch from the current hue palette, so the
+   new colours show immediately (start!/restart-track! don't rebuild the agents)."
+  []
+  (when-not (:p-rand-color? @core/params)   ; rand-color agents keep their own random hues
+    (when-let [ph (:phys @core/last-state)]
+      (when-let [pal @scene/audio-palette]
+        (phys/recolor! ph pal)))))
 
 (def ^:private KICK-DECAY 0.80)       ; per-frame decay => ~150ms tail on each onset
 (def ^:private KICK-ATTACK 0.25)      ; per-frame rise toward an onset => gentle attack, not a jump
@@ -207,54 +249,84 @@
     true
     (catch Throwable _ false)))
 
-(defn- tick! []
-  (when-let [{:keys [analysis ^long t0]} @state]
-    (let [secs  (/ (- (System/nanoTime) t0) 1.0e9)
-          ^doubles gains (gains-at analysis secs)
-          p     @core/params]
-      (if gains
-        (let [pal (or (:palette p) (:palette (scene/theme p)) [[1.0 1.0 1.0]])
+(defn modulate!
+  "Apply one frame of audio modulation for playback time `secs`: set the scene's
+   per-colour keep / dt / emit / gains atoms from the analysis at that time. Pure
+   w.r.t. wall-clock — drives both the live tick (secs = elapsed) and the offline
+   video renderer (secs = frame/fps), so a rendered file matches what you hear.
+   Advances the beat-counter/kick envelope atoms, so call once per frame in order."
+  [analysis secs p]
+  (let [secs (double secs)
+        ^doubles gains (gains-at analysis secs)]
+    (if gains
+      (let [pal (or @scene/audio-palette (base-palette p))  ; same hues the agents wear
+
               ;; gate the onset so only real beats fire, then sharpen to 0..1
-              g   0.15
-              fv  (max 0.0 (/ (- (flux-at analysis secs) g) (- 1.0 g)))
+            g   0.15
+            fv  (max 0.0 (/ (- (flux-at analysis secs) g) (- 1.0 g)))
               ;; count beats (rising-edge trigger, debounced); accent every Nth one
-              _   (when (and (not @armed) (> fv 0.30)) (reset! armed true) (swap! beat-n inc))
-              _   (when (< fv 0.12) (reset! armed false))
+            _   (when (and (not @armed) (> fv 0.30)) (reset! armed true) (swap! beat-n inc))
+            _   (when (< fv 0.12) (reset! armed false))
               ;; every beat kicks at the base level; every Nth gets the stronger accent
-              acc (if (zero? (mod @beat-n (long (:audio-beat-every p 4))))
-                    (double (:audio-beat-accent p 3.0))
-                    (double (:audio-beat-base p 2.0)))
-              fv* (* fv acc)
+            acc (if (zero? (mod @beat-n (long (:audio-beat-every p 4))))
+                  (double (:audio-beat-accent p 3.0))
+                  (double (:audio-beat-base p 2.0)))
+            fv* (* fv acc)
               ;; beat: rise gently toward the (accented) onset, then decay — no hard jump
-              k   (let [pk (double @kick)]
-                    (max (* pk KICK-DECAY) (+ pk (* KICK-ATTACK (- fv* pk)))))
+            k   (let [pk (double @kick)]
+                  (max (* pk KICK-DECAY) (+ pk (* KICK-ATTACK (- fv* pk)))))
               ;; overall loudness (mean band gain) => emission boost (more density)
-              n   (alength gains)
-              energy (if (pos? n) (/ (areduce gains i s 0.0 (+ s (aget gains i))) n) 0.0)]
-          (reset! kick k)
-          (cond
+            n   (alength gains)
+            energy (if (pos? n) (/ (areduce gains i s 0.0 (+ s (aget gains i))) n) 0.0)
+              ;; compress loudness -> emission: a floor keeps smoke flowing in
+              ;; quiet passages, and (1-floor) caps how much louder peaks add, so
+              ;; density never collapses when soft nor balloons when loud.
+            ef  (double (:audio-emit-floor p 0.0))
+            emit (* (double (:audio-emit-amp p)) (+ ef (* (- 1.0 ef) energy)))]
+        (reset! kick k)
+        (cond
             ;; agents mode: gains drive per-colour-group deposit in physarum; keep scalar,
             ;; NO global emit boost (the per-group bloom replaces it) => clean, not muddy
-            (:audio-agents? p)
-            (do (reset! scene/audio-gains gains)
-                (reset! scene/audio-keep nil)
-                (reset! scene/audio-emit nil))
+          (:audio-agents? p)
+          (do (reset! scene/audio-gains gains)
+              (reset! scene/audio-keep nil)
+              (reset! scene/audio-emit nil))
             ;; white mode: agents fade white->colour from the raw band gains; keep scalar
-            (:audio-white? p)
-            (do (reset! scene/audio-gains gains)
-                (reset! scene/audio-keep nil)
-                (reset! scene/audio-emit (* (double (:audio-emit-amp p)) energy)))
+          (:audio-white? p)
+          (do (reset! scene/audio-gains gains)
+              (reset! scene/audio-keep nil)
+              (reset! scene/audio-emit emit))
             ;; default: per-channel keep colouring
-            :else
-            (do (reset! scene/audio-keep (channel-keep gains pal (:keep p) (:audio-amp p) (:audio-floor p)))
-                (reset! scene/audio-gains nil)
-                (reset! scene/audio-emit (* (double (:audio-emit-amp p)) energy))))
-          (reset! scene/audio-dt (* (double (:audio-dt-amp p)) k)))
-        (do (reset! scene/audio-keep nil)
-            (reset! scene/audio-gains nil)
-            (reset! scene/audio-dt nil)
-            (reset! scene/audio-emit nil)
-            (reset! kick 0.0))))))
+          :else
+          (do (reset! scene/audio-keep (channel-keep gains pal (:keep p) (:audio-amp p) (:audio-floor p)))
+              (reset! scene/audio-gains nil)
+              (reset! scene/audio-emit emit)))
+        (reset! scene/audio-dt (* (double (:audio-dt-amp p)) k)))
+      (do (reset! scene/audio-keep nil)
+          (reset! scene/audio-gains nil)
+          (reset! scene/audio-dt nil)
+          (reset! scene/audio-emit nil)
+          (reset! kick 0.0)))))
+
+(defn- tick! []
+  (when-let [{:keys [analysis ^long t0]} @state]
+    (modulate! analysis (/ (- (System/nanoTime) t0) 1.0e9) @core/params)))
+
+;; ---- offline (deterministic, frame-indexed) modulation ---------------------
+;; Used by smoke.video to drive the same audio reactivity from a frame counter
+;; instead of the wall clock, so a rendered file is perfectly in sync.
+(defn offline-init!
+  "Reset the beat/kick state and roll a fresh band->colour permutation for an
+   offline render of `analysis`. Clears the live audio-hook so nothing competes."
+  [analysis]
+  (reset! scene/audio-hook nil)
+  (reset! kick 0.0) (reset! beat-n 0) (reset! armed false)
+  (reroll-colors! (long (:bands analysis))))
+
+(defn band-count
+  "Number of frequency bands for `p` = its active palette's colour count."
+  [p]
+  (max 1 (count (or (:palette p) (:palette (scene/theme p)) [1]))))
 
 (defn stop!
   "Stop playback and hand the smoke back to its scalar :keep."
@@ -264,6 +336,7 @@
     (try (.destroy proc) (catch Throwable _)))
   (reset! state nil)
   (reset! kick 0.0) (reset! beat-n 0) (reset! armed false)
+  (reset! scene/audio-palette nil)  ; back to the theme's own palette
   (reset! scene/audio-keep nil)
   (reset! scene/audio-dt nil)
   (reset! scene/audio-emit nil))
@@ -286,6 +359,8 @@
                            (.redirectOutput ProcessBuilder$Redirect/DISCARD)
                            (.redirectError ProcessBuilder$Redirect/DISCARD)))
         t0       (System/nanoTime)]
+    (reroll-colors! nb)
+    (recolor-live!)
     (reset! state {:proc proc :analysis analysis :t0 t0})
     ;; the render loop calls this once per frame => in lockstep, never starved
     (reset! scene/audio-hook (fn [] (try (tick!) (catch Throwable _))))
@@ -294,10 +369,12 @@
 (defn restart-track!
   "Seek the audio back to the start and re-sync (wired to the sketch's 'r' key)."
   []
-  (when @state
+  (when-let [st @state]
     (mpv-cmd! "{\"command\":[\"seek\",0,\"absolute\"]}")
     (mpv-cmd! "{\"command\":[\"set_property\",\"pause\",false]}")
     (swap! state assoc :t0 (System/nanoTime) :paused-at nil)
+    (reroll-colors! (-> st :analysis :bands long))  ; fresh random colours on every restart
+    (recolor-live!)                                  ; repaint now (the 'r' rebuild also re-applies it)
     (reset! kick 0.0) (reset! beat-n 0) (reset! armed false)))
 
 (defn set-paused!
@@ -313,6 +390,30 @@
         (swap! state (fn [s] (-> s (update :t0 + (- (System/nanoTime) (long pa)))
                                  (assoc :paused-at nil))))))))
 
+(defn- now-secs
+  "Current playback position (seconds) from the wall-clock state; frozen at
+   :paused-at while paused so a seek-while-paused stays correct."
+  ^double [{:keys [^long t0 paused-at]}]
+  (/ (- (long (or paused-at (System/nanoTime))) t0) 1.0e9))
+
+(defn seek!
+  "Seek the audio by `delta` seconds (relative; negative rewinds), keeping the
+   modulation clock in sync so the smoke jumps WITH the sound. We re-anchor t0
+   from the current position and tell mpv the absolute target, so the two never
+   drift. Clamped at 0 (mpv clamps the upper end); a no-op if nothing's playing.
+   Wired to the sketch's arrow keys."
+  [delta]
+  (when-let [st @state]
+    (let [pos (max 0.0 (+ (now-secs st) (double delta)))
+          now (System/nanoTime)
+          t0  (long (- now (long (* pos 1.0e9))))]
+      (mpv-cmd! (str "{\"command\":[\"seek\"," pos ",\"absolute\"]}"))
+      (swap! state assoc
+             :t0 t0
+             ;; if paused, re-anchor the freeze point so elapsed stays = pos
+             :paused-at (when (:paused-at st) now))
+      pos)))
+
 (defn play-with-sim!
   "Open the sketch and start the audio together. Extra args go to `start!`."
   [path & opts]
@@ -323,5 +424,9 @@
   (require '[smoke.audio :as a] :reload)
   (swap! smoke.core/params merge (smoke.scene/preset-params :tropic-rivers))
   (a/play-with-sim! "/tmp/song.wav")
+  (a/play-with-sim! "/home/benj/repos/musicanalysis/Alle Warten [Qdll_yQEtwQ].wav")
+
+  (a/play-with-sim! "/home/benj/repos/musicanalysis/vom Feisten @ 44 Hertz at Kater Berlin - 12⧸12⧸25 [c7bSbvAHbMc].wav")
+
   (swap! smoke.core/params assoc :audio-amp 0.05)
   (a/stop!))

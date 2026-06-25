@@ -17,25 +17,53 @@
 (set! *unchecked-math* :warn-on-boxed)
 (def ^:const PI2 6.283185307179586)
 
+(defn- hsv->rgb
+  "[r g b] in 0..1 from hue/sat/val in 0..1."
+  [h s v]
+  (let [rgb (java.awt.Color/HSBtoRGB (float h) (float s) (float v))]
+    [(/ (bit-and (bit-shift-right rgb 16) 0xff) 255.0)
+     (/ (bit-and (bit-shift-right rgb 8) 0xff) 255.0)
+     (/ (bit-and rgb 0xff) 255.0)]))
+
 (defn make
   "Allocate `cnt` agents (random pos/heading), coloured from `palette`, plus a
-   trail map (used only in :trail mode)."
-  [^long n ^long cnt palette]
-  (let [xs (float-array cnt) ys (float-array cnt) hs (float-array cnt)
-        ar (float-array cnt) ag (float-array cnt) ab (float-array cnt)
-        band (int-array cnt)                 ; palette/freq-band index, for :audio-white? mode
+   trail map (used only in :trail mode). When `rand-color?`, every agent gets its
+   own random vivid hue instead of a palette colour (band indices still cycle the
+   palette, so audio grouping is unaffected)."
+  ([^long n ^long cnt palette] (make n cnt palette false))
+  ([^long n ^long cnt palette rand-color?]
+   (let [xs (float-array cnt) ys (float-array cnt) hs (float-array cnt)
+         ar (float-array cnt) ag (float-array cnt) ab (float-array cnt)
+         band (int-array cnt)                 ; palette/freq-band index, for :audio-white? mode
+         pal (vec palette) pc (count pal)]
+     (dotimes [i cnt]
+       (aset xs i (float (* (double (rand)) n)))
+       (aset ys i (float (* (double (rand)) n)))
+       (aset hs i (float (* (double (rand)) PI2)))
+       (aset band i (int (mod i pc)))
+       (let [c (if rand-color? (hsv->rgb (rand) 1.0 1.0) (nth pal (mod i pc)))]
+         (aset ar i (float (nth c 0)))
+         (aset ag i (float (nth c 1)))
+         (aset ab i (float (nth c 2)))))
+     {:n n :count cnt :xs xs :ys ys :hs hs :ar ar :ag ag :ab ab :band band
+      :trail (float-array (* n n)) :ttmp (float-array (* n n))})))
+
+(defn recolor!
+  "Re-paint every agent from `palette` by its band index (mutates the colour
+   arrays in place). Band indices are left alone so the audio gains keep driving
+   the same groups — only the colour each group wears changes."
+  [phys palette]
+  (let [cnt (long (:count phys))
+        ^floats ar (:ar phys) ^floats ag (:ag phys) ^floats ab (:ab phys)
+        ^ints band (:band phys)
         pal (vec palette) pc (count pal)]
-    (dotimes [i cnt]
-      (aset xs i (float (* (double (rand)) n)))
-      (aset ys i (float (* (double (rand)) n)))
-      (aset hs i (float (* (double (rand)) PI2)))
-      (aset band i (int (mod i pc)))
-      (let [c (nth pal (mod i pc))]
-        (aset ar i (float (nth c 0)))
-        (aset ag i (float (nth c 1)))
-        (aset ab i (float (nth c 2)))))
-    {:n n :count cnt :xs xs :ys ys :hs hs :ar ar :ag ag :ab ab :band band
-     :trail (float-array (* n n)) :ttmp (float-array (* n n))}))
+    (when (pos? pc)
+      (dotimes [i cnt]
+        (let [c (nth pal (mod (aget band i) pc))]
+          (aset ar i (float (nth c 0)))
+          (aset ag i (float (nth c 1)))
+          (aset ab i (float (nth c 2))))))
+    phys))
 
 (defn- wrap ^double [^double x ^long n]
   (let [m (rem x n)] (if (neg? m) (+ m n) m)))

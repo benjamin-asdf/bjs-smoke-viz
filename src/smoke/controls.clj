@@ -250,6 +250,7 @@
 
 (defn- buttons-row [^JPanel parent]
   (let [stars (JCheckBox. "stars" (boolean (:stars @core/params)))
+        randc (JCheckBox. "rand agent colors" (boolean (:p-rand-color? @core/params)))
         reset (JButton. "Reset field (r)")
         pause (JButton. "Toggle pause (space)")
         defs  (JButton. "Reset all params")
@@ -258,6 +259,11 @@
     (.addActionListener stars
                         (reify ActionListener
                           (actionPerformed [_ _] (swap! core/params assoc :stars (.isSelected stars)))))
+    (.addActionListener randc
+                        (reify ActionListener
+                          (actionPerformed [_ _]
+                            (swap! core/params assoc :p-rand-color? (.isSelected randc))
+                            (reset! core/reset? true))))  ; re-seed so agents take new colours
     (.addActionListener reset
                         (reify ActionListener
                           (actionPerformed [_ _] (reset! core/reset? true))))
@@ -275,8 +281,8 @@
                           (actionPerformed [_ _]
                             ;; off the EDT: q/sketch spawns its own window/threads
                             (.start (Thread. ^Runnable (fn [] (smoke.core/restart!)))))))
-    (doseq [^java.awt.Component c [stars reset pause defs rest-]] (.setFont c FONT))
-    (doto row (.setAlignmentX 0.0) (.add stars) (.add reset) (.add pause) (.add defs) (.add rest-))
+    (doseq [^java.awt.Component c [stars randc reset pause defs rest-]] (.setFont c FONT))
+    (doto row (.setAlignmentX 0.0) (.add stars) (.add randc) (.add reset) (.add pause) (.add defs) (.add rest-))
     (.add parent row)))
 
 (defn- populate! [^JPanel panel]
