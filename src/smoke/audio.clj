@@ -27,32 +27,6 @@
 
 (set! *warn-on-reflection* true)
 
-;; ---- decode ----------------------------------------------------------------
-(defn- read-pcm
-  "Decode `path` (WAV/AIFF) to mono doubles in [-1,1] plus the sample rate."
-  [path]
-  (with-open [in0 (AudioSystem/getAudioInputStream (File. ^String path))]
-    (let [base   (.getFormat in0)
-          sr     (.getSampleRate base)
-          ch     (.getChannels base)
-          target (AudioFormat. AudioFormat$Encoding/PCM_SIGNED sr 16 ch (* 2 ch)
-                               sr false)            ; 16-bit signed little-endian
-          in     (AudioSystem/getAudioInputStream target in0)
-          ^bytes raw (.readAllBytes in)
-          frames (quot (alength raw) (* 2 ch))
-          out    (double-array frames)]
-      (dotimes [i frames]
-        (let [acc (loop [c 0 s 0]
-                    (if (< c ch)
-                      (let [b   (* 2 (+ (* i ch) c))
-                            lo  (bit-and (aget raw b) 0xff)
-                            hi  (aget raw (inc b))          ; signed high byte
-                            val (bit-or (bit-shift-left hi 8) lo)]
-                        (recur (inc c) (+ s val)))
-                      s))]
-          (aset out i (/ (double acc) (* (double ch) 32768.0)))))
-      {:samples out :rate (double sr)})))
-
 ;; ---- analysis --------------------------------------------------------------
 (defn- band-edges
   "Log-spaced FFT-bin edges for `bands` buckets from ~40 Hz to Nyquist."
@@ -63,66 +37,103 @@
           (range (inc bands)))))
 
 (defn analyze
-  "Pre-analyse `path` into {:hops [double[bands] ...] :hop-secs :bands :dur-secs}.
-   Each band gain is normalised to 0..1 over the whole track. `fps` should match
-   the render frame rate; `fft-n` is the (power-of-two) window size."
+  "Stream-analyse `path` (WAV/AIFF) into {:hops [double[bands] ...] :flux ...
+   :hop-secs :bands :rate :dur-secs}. Reads the file in ONE pass through a ring
+   buffer of the last `fft-n` samples — only that window is held in memory, so
+   arbitrarily long files (multi-hour sets) analyse without loading the whole
+   track. Each band gain is normalised to 0..1 over the track; `fps` should
+   match the render frame rate."
   [path & {:keys [bands fps fft-n] :or {bands 3 fps 60 fft-n 2048}}]
-  (let [{:keys [^doubles samples ^double rate]} (read-pcm path)
-        nsamp (alength samples)
-        hop   (max 1 (long (/ rate (double fps))))
-        nhops (max 1 (long (Math/ceil (/ (double nsamp) (double hop)))))
-        fft   (DoubleFFT_1D. (long fft-n))
-        edges (band-edges bands fft-n rate)
-        half  (quot (long fft-n) 2)
-        hann  (double-array fft-n)
-        buf   (double-array fft-n)
-        raw   (object-array nhops)]
-    (dotimes [i fft-n]
-      (aset hann i (* 0.5 (- 1.0 (Math/cos (/ (* 2.0 Math/PI i) (dec (long fft-n))))))))
-    (dotimes [h nhops]
-      (let [start (* (long h) hop)]
-        (dotimes [i fft-n]
-          (let [s (+ start i)]
-            (aset buf i (if (< s nsamp) (* (aget samples s) (aget hann i)) 0.0))))
-        (.realForward fft buf)
-        (let [g (double-array bands)]
-          (dotimes [b bands]
-            (let [b0 (max 1 (long (nth edges b)))
-                  b1 (min half (long (nth edges (inc b))))]
-              (aset g b (double (loop [k b0 acc 0.0]
-                                  (if (< k b1)
-                                    (let [re (aget buf (* 2 k)) im (aget buf (inc (* 2 k)))]
-                                      (recur (inc k) (+ acc (Math/sqrt (+ (* re re) (* im im))))))
-                                    (/ acc (double (max 1 (- b1 b0))))))))))
-          (aset raw h g))))
-    ;; normalise each band over the track by its peak; onset flux = summed
-    ;; positive band-energy increase between hops (beat/onset detector)
-    (let [maxes (double-array bands)
-          flux  (double-array nhops)]
-      (dotimes [h nhops]
-        (let [^doubles g (aget raw h)]
-          (dotimes [b bands] (when (> (aget g b) (aget maxes b)) (aset maxes b (aget g b))))
-          (when (pos? h)
-            (let [^doubles gp (aget raw (dec h))]
-              (aset flux h (double (reduce (fn [a b] (+ (double a) (max 0.0 (- (aget g b) (aget gp b)))))
-                                           0.0 (range bands))))))))
-      ;; normalise flux by the 95th percentile (not the max) so typical beats reach
-      ;; ~1.0 instead of being squashed by rare huge transients
-      (let [sorted (double-array flux)
-            _      (java.util.Arrays/sort sorted)
-            p95    (aget sorted (long (* 0.95 (dec nhops))))
-            norm   (if (pos? p95) p95 1.0)]
-        (dotimes [h nhops] (aset flux h (min 1.0 (/ (aget flux h) norm)))))
-      {:hops     (mapv (fn [^doubles g]
-                         (double-array (map (fn [b] (let [m (aget maxes b)]
-                                                      (if (pos? m) (/ (aget g b) m) 0.0)))
-                                            (range bands))))
-                       raw)
-       :flux     flux
-       :hop-secs (/ 1.0 (double fps))
-       :bands    bands
-       :rate     rate
-       :dur-secs (/ (double nsamp) rate)})))
+  (with-open [in0 (AudioSystem/getAudioInputStream (File. ^String path))]
+    (let [^javax.sound.sampled.AudioFormat base (.getFormat in0)
+          rate   (double (.getSampleRate base))
+          ch     (long (.getChannels base))
+          target (AudioFormat. AudioFormat$Encoding/PCM_SIGNED (float rate) 16 (int ch)
+                               (int (* 2 ch)) (float rate) false)
+          ^javax.sound.sampled.AudioInputStream in (AudioSystem/getAudioInputStream target in0)
+          fftn   (long fft-n)
+          hop    (max 1 (long (/ rate (double fps))))
+          fft    (DoubleFFT_1D. fftn)
+          edges  (band-edges bands fftn rate)
+          half   (quot fftn 2)
+          hann   (double-array fftn)
+          ring   (double-array fftn)       ; circular window of last fftn mono samples
+          win    (double-array fftn)
+          raw    (java.util.ArrayList.)    ; per-hop double[bands], grows with the track
+          frameb (int (* 2 ch))
+          chunk  (byte-array (* frameb 16384))
+          emit!  (fn [^long widx]          ; FFT the current window (oldest at widx)
+                   (dotimes [i fftn]
+                     (aset win i (* (aget ring (rem (+ widx i) fftn)) (aget hann i))))
+                   (.realForward fft win)
+                   (let [g (double-array bands)]
+                     (dotimes [b bands]
+                       (let [b0 (max 1 (long (nth edges b)))
+                             b1 (min half (long (nth edges (inc b))))]
+                         (aset g b (double (loop [k b0 acc 0.0]
+                                             (if (< k b1)
+                                               (let [re (aget win (* 2 k)) im (aget win (inc (* 2 k)))]
+                                                 (recur (inc k) (+ acc (Math/sqrt (+ (* re re) (* im im))))))
+                                               (/ acc (double (max 1 (- b1 b0))))))))))
+                     (.add raw g)))]
+      (dotimes [i fftn]
+        (aset hann i (* 0.5 (- 1.0 (Math/cos (/ (* 2.0 Math/PI i) (dec fftn)))))))
+      ;; stream: read frame-aligned chunks (carry partial frames), decode to mono,
+      ;; push into the ring, emit a hop every `hop` samples
+      (let [total
+            (loop [carry 0 widx 0 total 0]
+              (let [n (.read in chunk carry (- (alength chunk) carry))]
+                (if (neg? n)
+                  total
+                  (let [avail   (+ carry n)
+                        nframes (quot avail frameb)
+                        used    (* nframes frameb)
+                        res     (loop [f 0 widx widx total total]
+                                  (if (< f nframes)
+                                    (let [bb (* f frameb)
+                                          s  (loop [c 0 acc 0]
+                                               (if (< c ch)
+                                                 (let [pp (+ bb (* 2 c))
+                                                       lo (bit-and (aget chunk pp) 0xff)
+                                                       hi (aget chunk (inc pp))]
+                                                   (recur (inc c) (+ acc (bit-or (bit-shift-left hi 8) lo))))
+                                                 acc))
+                                          mono   (/ (double s) (* (double ch) 32768.0))
+                                          widx'  (rem (inc (long widx)) fftn)
+                                          total' (inc (long total))]
+                                      (aset ring (long widx) mono)
+                                      (when (zero? (rem total' hop)) (emit! widx'))
+                                      (recur (inc f) widx' total'))
+                                    [widx total]))
+                        rem-bytes (- avail used)]
+                    (when (pos? rem-bytes) (System/arraycopy chunk used chunk 0 rem-bytes))
+                    (recur rem-bytes (long (nth res 0)) (long (nth res 1)))))))
+            nhops (.size raw)]
+        ;; normalise each band by its peak; onset flux = positive band-energy rise
+        (let [maxes (double-array bands)
+              flux  (double-array nhops)]
+          (dotimes [h nhops]
+            (let [^doubles g (.get raw h)]
+              (dotimes [b bands] (when (> (aget g b) (aget maxes b)) (aset maxes b (aget g b))))
+              (when (pos? h)
+                (let [^doubles gp (.get raw (dec h))]
+                  (aset flux h (double (reduce (fn [a b] (+ (double a) (max 0.0 (- (aget g b) (aget gp b)))))
+                                               0.0 (range bands))))))))
+          (when (pos? nhops)
+            (let [sorted (double-array flux)
+                  _      (java.util.Arrays/sort sorted)
+                  p95    (aget sorted (long (* 0.95 (dec nhops))))
+                  norm   (if (pos? p95) p95 1.0)]
+              (dotimes [h nhops] (aset flux h (min 1.0 (/ (aget flux h) norm))))))
+          (dotimes [h nhops]                         ; normalise band gains in place
+            (let [^doubles g (.get raw h)]
+              (dotimes [b bands] (let [m (aget maxes b)] (aset g b (if (pos? m) (/ (aget g b) m) 0.0))))))
+          {:hops     (vec raw)
+           :flux     flux
+           :hop-secs (/ 1.0 (double fps))
+           :bands    bands
+           :rate     rate
+           :dur-secs (/ (double total) rate)})))))
 
 ;; ---- per-frame modulation --------------------------------------------------
 (defn- channel-keep
