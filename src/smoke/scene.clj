@@ -19,10 +19,39 @@
 (set! *warn-on-reflection* true)
 (set! *unchecked-math* :warn-on-boxed)
 
-(def ^:const N     256)        ; n x n periodic grid; bump to 512 for finer detail (4x FFT cost)
-(def ^:const SCALE 3)          ; window/image px per cell (=> 768x768). Bigger costs CPU quadratically.
+(def ^:const N     256)        ; DEFAULT n x n periodic grid; override per-run via (:grid-n p).
+                               ; The solver/scene read the live grid from the fluid (:n fl), so a
+                               ; bigger grid = finer sim detail (cost ~ n^2 log n, now parallelised).
+(def ^:const SCALE 3)          ; default render px per cell (=> 768x768 square) when no :render-w set.
 (def ^:const W     (* N SCALE))
 (def ^:const TAU   6.283185307179586)
+
+(defn grid-n
+  "Sim grid size for this run: (:grid-n p) or the default N."
+  ^long [p] (long (:grid-n p N)))
+
+(defn render-w
+  "Output render width in px: (:render-w p) or a square default (grid-n * SCALE)."
+  ^long [p] (long (:render-w p (* (grid-n p) SCALE))))
+
+(defn render-h
+  "Output render height in px: (:render-h p) or square (= render-w)."
+  ^long [p] (long (:render-h p (render-w p))))
+
+(defn win->cell
+  "Map a window pixel (mx,my) in a (ww x wh) window to a grid cell [i j],
+   inverting the render's scale-to-window + cover-crop. Returns clamped longs."
+  [p ww wh mx my]
+  (let [ww (long ww) wh (long wh) mx (long mx) my (long my)
+        n (grid-n p) rw (render-w p) rh (render-h p) bigm (max rw rh)
+        rx (* (double mx) (/ (double rw) (double (max 1 ww))))   ; window px -> render px
+        ry (* (double my) (/ (double rh) (double (max 1 wh))))
+        gscale (/ (double (dec n)) (double (dec bigm)))
+        offx (* 0.5 (- (double bigm) (double rw)))
+        offy (* 0.5 (- (double bigm) (double rh)))
+        i (long (* (+ rx offx) gscale))
+        j (long (* (+ ry offy) gscale))]
+    [(min (dec n) (max 0 i)) (min (dec n) (max 0 j))]))
 
 ;; ---- themes = mode + config ------------------------------------------------
 ;; A physarum theme may carry :p-defaults — parameter overrides applied to the
@@ -131,11 +160,12 @@
    :jet-count   3        ; number of moving sources in the :jets theme; extras get random palette colours
    :audio-amp   0.035    ; how much an audio band's energy raises its colour's keep (smoke.audio)
    :audio-dt-amp 0.15    ; extra dt kicked in on each beat onset (smoke.audio); base :dt is ~0.04
-   :audio-floor 0.08     ; in audio mode, how far below :keep silence drops a colour (clears density)
+   :audio-floor 0.035    ; in audio mode, how far below :keep silence drops a colour (smaller => denser quiet smoke)
    :audio-beat-every 4   ; accent every Nth detected beat (downbeat)
    :audio-beat-accent 3.0 ; dt-kick multiplier on the accented (Nth) beat
    :audio-beat-base 2.0  ; dt-kick multiplier on every other beat (between normal=1 and accent)
-   :audio-emit-amp 1.5   ; loudness -> extra emission: deposit scales by (1 + this * energy) (smoke.audio)
+   :audio-emit-amp 0.9   ; loudness -> extra emission: deposit scales by (1 + this * energy) (smoke.audio)
+   :audio-emit-floor 0.45 ; fraction of the emission boost applied even in silence => smoke keeps flowing when quiet (smoke.audio)
    :audio-white? false   ; audio mode: agents deposit WHITE, each freq band fades in its palette colour
    :audio-white-density 0.5 ; deposit scale in :audio-white? mode (white fills all 3 channels => dimmer)
    :audio-agents? false  ; audio mode: agents keep their colour; each band ADDS intensity to its group
@@ -162,6 +192,7 @@
    :p-wander      0.0    ; random heading jitter per tick (rad); high => smoke not networks (:haze)
    :p-decay       0.90   ; trail kept per tick (:network mode)
    :p-bright      0.6    ; white-network brightness (:network mode)
+   :p-rand-color? false  ; each agent gets its own random vivid hue (ignores palette); re-seed to apply
    :boids         nil})  ;; boids config (:sources mode); nil => boids/default-boid
 
 (defn theme [p] (get themes (:theme p) (:jets themes)))
@@ -173,6 +204,7 @@
 (defonce audio-dt   (atom nil)) ; transient dt boost on beats, set by smoke.audio; nil/0 => none
 (defonce audio-emit (atom nil)) ; emission (deposit) multiplier from loudness, set by smoke.audio; nil/0 => none
 (defonce audio-gains (atom nil)) ; per-band gains [g0 g1 ..] for :audio-white? mode (agents fade white->colour)
+(defonce audio-palette (atom nil)) ; generated vivid-hue palette set by smoke.audio ('r' re-rolls it); nil => theme palette
 (defonce audio-hook (atom nil)) ; 0-arg fn run once per sim frame (smoke.audio drives keep/dt from playback)
 (defonce stars   (atom []))   ; persistent star particles {:x :y :vx :vy :ax :ay :r :g :b}
 (def ^:const STAR-MAX 700)
@@ -205,7 +237,7 @@
          [0.0 0.0]]))))
 
 (defn- emit-sources! [fl srcs positions]
-  (let [n (long N)
+  (let [n (long (:n fl))
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)]
     (doseq [[src pos] (map vector srcs positions)]
       (let [color (:color src) e (double (:emit src))
@@ -266,23 +298,25 @@
 
 ;; ---- noise flow-field wind -------------------------------------------------
 (defn- apply-wind! [fl p ^double t]
-  (let [n (long N)
+  (let [n (long (:n fl))
         ^floats fx (:fx fl) ^floats fy (:fy fl) ^floats d (:dens fl)
         w (double (:wind p)) sc (* TAU (double (:noise-scale p)))
         sp (* (double (:noise-speed p)) t) inv (/ 1.0 (double n))]
     (when (pos? w)
-      (dotimes [j n]
-        (let [yn (* j inv)]
-          (dotimes [i n]
-            (let [k (f/idx n i j) dk (aget d k)]
-              (when (> dk 1.0e-4)
-                (let [xn (* i inv)
-                      wx (+ (Math/sin (+ (* sc yn) sp))
-                            (* 0.5 (Math/sin (- (* sc 1.7 yn) (* sc 0.9 xn) (* 1.3 sp)))))
-                      wy (+ (Math/cos (- (* sc xn) sp))
-                            (* 0.5 (Math/sin (+ (* sc 1.3 xn) (* sc 1.1 yn) (* 0.7 sp)))))]
-                  (aset fx k (float (+ (aget fx k) (* w wx dk))))
-                  (aset fy k (float (+ (aget fy k) (* w wy dk)))))))))))))
+      (f/par-rows
+       n
+       (fn [^long j]
+         (let [yn (* j inv)]
+           (dotimes [i n]
+             (let [k (f/idx n i j) dk (aget d k)]
+               (when (> dk 1.0e-4)
+                 (let [xn (* i inv)
+                       wx (+ (Math/sin (+ (* sc yn) sp))
+                             (* 0.5 (Math/sin (- (* sc 1.7 yn) (* sc 0.9 xn) (* 1.3 sp)))))
+                       wy (+ (Math/cos (- (* sc xn) sp))
+                             (* 0.5 (Math/sin (+ (* sc 1.3 xn) (* sc 1.1 yn) (* 0.7 sp)))))]
+                   (aset fx k (float (+ (aget fx k) (* w wx dk))))
+                   (aset fy k (float (+ (aget fy k) (* w wy dk))))))))))))))
 
 (defn seed-sources!
   "Per-frame pre-step: reset forces, apply wind, and (in :jets mode) emit the
@@ -297,11 +331,14 @@
 (declare update-stars!)
 
 (defn new-fluid
-  "Fresh state: fluid grid + Physarum agents coloured from the theme palette."
+  "Fresh state: fluid grid + Physarum agents coloured from the theme palette,
+   or from the live audio's seed-generated hue palette when one is set ('r')."
   [p]
   (reset! stars [])
-  (assoc (f/make-fluid N)
-         :phys (phys/make N (:p-count p) (or (:palette p) (:palette (theme p)) [[1.0 1.0 1.0]]))))
+  (let [n   (grid-n p)
+        pal (or @audio-palette (:palette p) (:palette (theme p)) [[1.0 1.0 1.0]])]
+    (assoc (f/make-fluid n)
+           :phys (phys/make n (:p-count p) pal (:p-rand-color? p)))))
 
 (defn advance
   "One tick: velocity → (Physarum emission for :slime/:network) → advect/dissipate
@@ -344,17 +381,21 @@
    drifts to the window edge. Then spawn a new persistent star at each strong
    density peak that has no star nearby yet. Runs in `advance` (works headless)."
   [fl p]
-  (let [n (long N) wmax (double (dec W))
+  (let [n (long (:n fl))
+        w (render-w p) h (render-h p) mx (max w h)
+        gscale (/ (double (dec n)) (double (dec mx)))     ; grid units per output px (cover)
+        offx (* 0.5 (- (double mx) (double w)))            ; centring offset (cropped axis)
+        offy (* 0.5 (- (double mx) (double h)))
+        ipx  (/ 1.0 gscale)                                ; grid -> output px factor
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
         thresh (double (:star-thresh p))
-        g->px (/ (double (dec W)) (double (dec n)))
         moved (into [] (keep (fn [s]
                                (let [vx (+ (double (:vx s)) (double (:ax s)))
                                      vy (+ (double (:vy s)) (double (:ay s)))
                                      nx (+ (double (:x s)) vx)
                                      ny (+ (double (:y s)) vy)]
                                  ;; die at the edge instead of clamping
-                                 (when (and (> nx 0.0) (< nx wmax) (> ny 0.0) (< ny wmax))
+                                 (when (and (> nx 0.0) (< nx (dec w)) (> ny 0.0) (< ny (dec h)))
                                    (assoc s :vx vx :vy vy :x nx :y ny)))))
                     @stars)
         acc (volatile! moved)]
@@ -368,11 +409,12 @@
                        (>= d (+ (aget dr (f/idx n (inc i) j)) (aget dg (f/idx n (inc i) j)) (aget db (f/idx n (inc i) j))))
                        (>= d (+ (aget dr (f/idx n i (dec j))) (aget dg (f/idx n i (dec j))) (aget db (f/idx n i (dec j)))))
                        (>= d (+ (aget dr (f/idx n i (inc j))) (aget dg (f/idx n i (inc j))) (aget db (f/idx n i (inc j))))))
-              (let [px (* i g->px) py (* j g->px)]
-                (when (not-any? (fn [s]
-                                  (let [ex (- px (double (:x s))) ey (- py (double (:y s)))]
-                                    (< (+ (* ex ex) (* ey ey)) STAR-MINDIST2)))
-                                @acc)
+              (let [px (- (* i ipx) offx) py (- (* j ipx) offy)]   ; grid -> visible output px
+                (when (and (>= px 0.0) (< px (dec w)) (>= py 0.0) (< py (dec h))
+                           (not-any? (fn [s]
+                                       (let [ex (- px (double (:x s))) ey (- py (double (:y s)))]
+                                         (< (+ (* ex ex) (* ey ey)) STAR-MINDIST2)))
+                                     @acc))
                   (let [inv (/ 1.0 d)]
                     (vswap! acc conj
                             {:x px :y py
@@ -385,7 +427,7 @@
   "Draw each persistent star as a bright colour disc, lerped toward white by a
    per-star time twinkle."
   [^ints px p ^double t]
-  (let [w (long W) R (long (:star-radius p)) speed (double (:star-speed p))]
+  (let [w (render-w p) h (render-h p) R (long (:star-radius p)) speed (double (:star-speed p))]
     (doseq [s @stars]
       (let [cx (long (:x s)) cy (long (:y s))
             cr0 (double (:r s)) cg0 (double (:g s)) cb0 (double (:b s))
@@ -395,7 +437,7 @@
             bbq (+ cb0 (* (- 1.0 cb0) flash))]
         (dotimes [dy (inc (* 2 R))]
           (let [oy (- dy R) py (+ cy oy)]
-            (when (and (>= py 0) (< py w))
+            (when (and (>= py 0) (< py h))
               (dotimes [dx (inc (* 2 R))]
                 (let [ox (- dx R) pxx (+ cx ox) rr2 (+ (* ox ox) (* oy oy))]
                   (when (and (<= rr2 (* R R)) (>= pxx 0) (< pxx w))
@@ -415,8 +457,10 @@
    white trail; optionally stamp twinkling stars at high-density peaks."
   [fl p ^ints px]
   (f/blur-colors! fl (:blur-passes p))
-  (let [n      (long N)
-        w      (long W)
+  (let [n      (long (:n fl))
+        w      (render-w p)
+        h      (render-h p)
+        mx     (max w h)
         nm1    (dec n)
         ^floats br (:br fl) ^floats bg (:bg fl) ^floats bb (:bb fl)
         ^floats trail (:trail (:phys fl))
@@ -426,29 +470,36 @@
         ;; saturation: amplify each pixel's chroma around its mean so the dominant
         ;; hue shows instead of washing to white. 1.0 = neutral; higher = vivid.
         sat    (double (:saturation p 1.0))
-        gscale (/ (double nm1) (double (dec w)))]
-    (dotimes [oy w]
-      (let [gy (* oy gscale) j0 (long gy) fy (- gy j0)
-            j1 (min nm1 (inc j0)) sy0 (- 1.0 fy) row (* oy w)]
-        (dotimes [ox w]
-          (let [gx (* ox gscale) i0 (long gx) fx (- gx i0)
-                i1 (min nm1 (inc i0)) sx0 (- 1.0 fx)
-                k00 (f/idx n i0 j0) k10 (f/idx n i1 j0)
-                k01 (f/idx n i0 j1) k11 (f/idx n i1 j1)
-                tr (* netw (+ (* sy0 (+ (* sx0 (aget trail k00)) (* fx (aget trail k10))))
-                              (* fy  (+ (* sx0 (aget trail k01)) (* fx (aget trail k11))))))
-                cr (+ (* sy0 (+ (* sx0 (aget br k00)) (* fx (aget br k10))))
-                      (* fy  (+ (* sx0 (aget br k01)) (* fx (aget br k11)))) tr)
-                cg (+ (* sy0 (+ (* sx0 (aget bg k00)) (* fx (aget bg k10))))
-                      (* fy  (+ (* sx0 (aget bg k01)) (* fx (aget bg k11)))) tr)
-                cb (+ (* sy0 (+ (* sx0 (aget bb k00)) (* fx (aget bb k10))))
-                      (* fy  (+ (* sx0 (aget bb k01)) (* fx (aget bb k11)))) tr)
-                mean (* (/ 1.0 3.0) (+ cr cg cb))   ; push channels away from grey mean
-                ri (long (aget tl (min (dec TLUTN) (max 0 (long (* (+ mean (* sat (- cr mean))) tscale))))))
-                gi (long (aget tl (min (dec TLUTN) (max 0 (long (* (+ mean (* sat (- cg mean))) tscale))))))
-                bi (long (aget tl (min (dec TLUTN) (max 0 (long (* (+ mean (* sat (- cb mean))) tscale))))))]
-            (aset px (+ ox row)
-                  (unchecked-int (bit-or (unchecked-int 0xFF000000)
-                                         (bit-shift-left ri 16) (bit-shift-left gi 8) bi)))))))
+        ;; cover-fit the square grid into the w x h frame: isotropic scale by the
+        ;; long edge, centre the short edge (=> crop, never stretch). w==h reduces
+        ;; to the old full-grid mapping.
+        gscale (/ (double nm1) (double (dec mx)))
+        offx   (* 0.5 (- (double mx) (double w)))
+        offy   (* 0.5 (- (double mx) (double h)))]
+    (f/par-rows
+     h
+     (fn [^long oy]
+       (let [gy (* (+ oy offy) gscale) j0 (long gy) fy (- gy j0)
+             j1 (min nm1 (inc j0)) sy0 (- 1.0 fy) row (* oy w)]
+         (dotimes [ox w]
+           (let [gx (* (+ ox offx) gscale) i0 (long gx) fx (- gx i0)
+                 i1 (min nm1 (inc i0)) sx0 (- 1.0 fx)
+                 k00 (f/idx n i0 j0) k10 (f/idx n i1 j0)
+                 k01 (f/idx n i0 j1) k11 (f/idx n i1 j1)
+                 tr (* netw (+ (* sy0 (+ (* sx0 (aget trail k00)) (* fx (aget trail k10))))
+                               (* fy  (+ (* sx0 (aget trail k01)) (* fx (aget trail k11))))))
+                 cr (+ (* sy0 (+ (* sx0 (aget br k00)) (* fx (aget br k10))))
+                       (* fy  (+ (* sx0 (aget br k01)) (* fx (aget br k11)))) tr)
+                 cg (+ (* sy0 (+ (* sx0 (aget bg k00)) (* fx (aget bg k10))))
+                       (* fy  (+ (* sx0 (aget bg k01)) (* fx (aget bg k11)))) tr)
+                 cb (+ (* sy0 (+ (* sx0 (aget bb k00)) (* fx (aget bb k10))))
+                       (* fy  (+ (* sx0 (aget bb k01)) (* fx (aget bb k11)))) tr)
+                 mean (* (/ 1.0 3.0) (+ cr cg cb))   ; push channels away from grey mean
+                 ri (long (aget tl (min (dec TLUTN) (max 0 (long (* (+ mean (* sat (- cr mean))) tscale))))))
+                 gi (long (aget tl (min (dec TLUTN) (max 0 (long (* (+ mean (* sat (- cg mean))) tscale))))))
+                 bi (long (aget tl (min (dec TLUTN) (max 0 (long (* (+ mean (* sat (- cb mean))) tscale))))))]
+             (aset px (+ ox row)
+                   (unchecked-int (bit-or (unchecked-int 0xFF000000)
+                                          (bit-shift-left ri 16) (bit-shift-left gi 8) bi))))))))
     (when (:stars p) (draw-stars! px p (double @frame)))
     px))

@@ -21,7 +21,7 @@
   (scene/advance fl p))
 
 (defn render! [fl p path]
-  (let [img (BufferedImage. (int scene/W) (int scene/W) BufferedImage/TYPE_INT_RGB)
+  (let [img (BufferedImage. (scene/render-w p) (scene/render-h p) BufferedImage/TYPE_INT_RGB)
         px  (.getData ^DataBufferInt (.getDataBuffer (.getRaster img)))]
     (scene/render-pixels! fl p px)
     (ImageIO/write img "png" (File. ^String path))

@@ -11,7 +11,8 @@
      (swap! smoke.core/params assoc :buoy 1.8)   ; tweak, applies next frame
      (smoke.core/start!)                          ; relaunch + reset
      (smoke.core/save-frame! \"/tmp/f.png\")        ; dump the rendered frame
-   Interact: drag mouse to push smoke. space = pause, r = reset."
+   Interact: drag mouse to push smoke. space = pause, r = reset,
+   ←/→ = seek ±5s, ↓/↑ = seek ±60s (all also drive mpv audio playback)."
   (:require [quil.core :as q]
             [quil.middleware :as qm]
             [smoke.fluid :as f]
@@ -33,19 +34,20 @@
   (q/image-mode :corner)
   ;; smooth (bilinear) texture upscaling so the GPU doesn't show blocky pixels
   (try (.textureSampling ^PGraphicsOpenGL (q/current-graphics) 4) (catch Throwable _))
-  (assoc (scene/new-fluid @params)
-         :img    (q/create-image scene/W scene/W :rgb)
-         :paused false))
-
-(defn- cell-of [^long px] (long (/ px scene/SCALE)))
+  (let [p @params]
+    (assoc (scene/new-fluid p)
+           :img    (q/create-image (scene/render-w p) (scene/render-h p) :rgb)
+           :paused false)))
 
 (defn inject-mouse!
   "Drag to add smoke + a push force at the cursor."
   [fl]
   (when (q/mouse-pressed?)
-    (let [n (long scene/N)
-          i (cell-of (q/mouse-x))
-          j (cell-of (q/mouse-y))]
+    (let [p @params
+          n (long (:n fl))
+          ;; window px -> grid cell, accounting for the render's cover-crop mapping
+          [i j] (scene/win->cell p (q/width) (q/height) (q/mouse-x) (q/mouse-y))
+          i (long i) j (long j)]
       (when (and (>= i 0) (< i n) (>= j 0) (< j n))
         (let [^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
               ^floats fx (:fx fl)
@@ -68,9 +70,21 @@
                   (aset fx k (+ (aget fx k) (float (* 3.0 dx))))
                   (aset fy k (+ (aget fy k) (float (* 3.0 dy)))))))))))))
 
+(defn- audio!
+  "Call a smoke.audio fn by symbol if the ns is loaded (lazy => no ns cycle).
+   Used to drive mpv playback (pause/seek/restart) from the sketch."
+  [sym & args]
+  (when-let [f (try (requiring-resolve sym) (catch Throwable _))]
+    (try (apply f args) (catch Throwable _))))
+
 (defn update-state [state]
   (let [state (if @pause-flip?
-                (do (reset! pause-flip? false) (update state :paused not))
+                ;; single pause toggle (space key + controls button both set the
+                ;; flag): flip :paused AND pause/resume the mpv audio in lockstep
+                (do (reset! pause-flip? false)
+                    (let [paused (not (:paused state))]
+                      (audio! 'smoke.audio/set-paused! paused)
+                      (assoc state :paused paused)))
                 state)]
     (cond
       @reset? (do (reset! reset? false)
@@ -113,39 +127,46 @@
         (q/blend-mode :blend))
       (q/image img 0 0 w h))))             ; scale render to fill the window/screen
 
-(defn- audio!
-  "Call a smoke.audio fn by symbol if the ns is loaded (lazy => no ns cycle).
-   Used to drive mpv playback from the sketch's transport keys."
-  [sym & args]
-  (when-let [f (try (requiring-resolve sym) (catch Throwable _))]
-    (try (apply f args) (catch Throwable _))))
-
 (defn key-pressed [state event]
   (case (:key event)
     :r       (do (audio! 'smoke.audio/restart-track!)   ; 'r' also restarts the audio from the top
                  (assoc (scene/new-fluid @params) :img (:img state) :paused (:paused state)))
-    :space   (let [paused (not (:paused state))]
-               (audio! 'smoke.audio/set-paused! paused)  ; space pauses/resumes audio with the sim
-               (assoc state :paused paused))
+    ;; route pause through pause-flip? so the key and the controls-window button
+    ;; share ONE toggle path (update-state) => audio always follows the sim
+    :space   (do (reset! pause-flip? true) state)
+    ;; arrows scrub the audio (and its modulation clock) — mpv-style steps
+    :left    (do (audio! 'smoke.audio/seek!  -5.0) state)
+    :right   (do (audio! 'smoke.audio/seek!   5.0) state)
+    :down    (do (audio! 'smoke.audio/seek! -60.0) state)
+    :up      (do (audio! 'smoke.audio/seek!  60.0) state)
     state))
 
 (defn start!
   "Launch (or relaunch) the sketch on the OpenGL (:p2d) renderer, so the GPU
-   scales the fixed-resolution (scene/W) render up to the window — big windows
-   stay cheap. The CPU per-pixel render cost is fixed at scene/W regardless.
+   scales the internal render (scene/render-w x scene/render-h) up to the window.
+   The window can be any size — the CPU per-pixel cost is fixed by the RENDER
+   resolution, not the window. Bump the render resolution for a crisper big frame.
 
    Options:
      :fullscreen true  — present-mode fullscreen (ESC exits)
-     :size  N          — windowed at N x N px (defaults to scene/W)
+     :size  N          — square window N x N px
+     :size  [w h]      — window w x h px (defaults to the render resolution)
+     :render [rw rh]   — internal render resolution (=> params :render-w/:render-h);
+                         e.g. [1920 1080] for a crisp 1080p frame
+     :grid  N          — sim grid size (=> params :grid-n); higher = finer smoke
    Handlers are #'vars so REPL redefinition takes effect live; relaunching
    disposes the old window (and resets the field)."
-  [& {:keys [fullscreen size] :as opts}]
+  [& {:keys [fullscreen size render grid] :as opts}]
   (reset! last-opts opts)   ; remembered so restart! can relaunch at the same size
+  (when render (swap! params assoc :render-w (first render) :render-h (second render)))
+  (when grid   (swap! params assoc :grid-n grid))
   (when-let [s @sketch] (try (.dispose ^processing.core.PApplet s) (catch Exception _)))
-  (let [dims (cond fullscreen (let [d (.getScreenSize (java.awt.Toolkit/getDefaultToolkit))]
+  (let [p @params
+        dims (cond fullscreen (let [d (.getScreenSize (java.awt.Toolkit/getDefaultToolkit))]
                                 [(.width d) (.height d)])
+                   (vector? size) size
                    size       [size size]
-                   :else      [scene/W scene/W])
+                   :else      [(scene/render-w p) (scene/render-h p)])
         opts (concat
               [:title       "bjs-smoke-viz"
                :size        dims
