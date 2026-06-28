@@ -108,6 +108,7 @@
                           ;; (coloured networks, no blob) AND gently stir the fluid so the
                           ;; smoke flows down their coloured traces
                           :p-flow? true :p-flow 5.0 :p-flow-blend 0.4 :p-flow-paint 0.0
+                          :p-freq-react? true :p-freq-speed 2.0 :p-freq-deposit 2.5
                           :p-count 2500 :p-sensor 9.0 :p-sense-angle 0.5 :p-turn 0.45
                           :p-speed 1.2 :p-deposit 0.28 :p-decay 0.90 :p-wind 0.0 :p-wander 0.2
                           :buoy 0.3 :keep 0.92 :expos 0.95 :saturation 3.2 :wind 2.0
@@ -115,10 +116,10 @@
                           :puff-radius 7.0 :puff-amount 2.6 :puff-vel 7.0 :puff-spawn-r 0.28
                           :puff-continuous? true :puff-spectral-scale 0.26 :puff-gain-gamma 0.5
                           :audio-wind-amp 2.0 :audio-wind-energy 0.6
-                          :voice? true :voice-amount 1.0 :voice-radius 0.3  ; near-single-cell point => filament smoke
-                          :voice-color [1.0 0.85 0.4] :voice-random? true
-                          :voice-agents? true :voice-agent-count 90 :voice-agent-life 70
-                          :voice-ring 7.0 :voice-bloom 0.5
+                          :pulse? true :pulse-amount 1.0 :pulse-radius 0.3  ; near-single-cell point => filament smoke
+                          :pulse-color [1.0 0.85 0.4] :pulse-random? true
+                          :pulse-agents? true :pulse-agent-count 90 :pulse-agent-life 70
+                          :pulse-ring 7.0 :pulse-bloom 0.5
                           :audio-sat 0.85 :audio-lift 0.1 :audio-palette-set nil
                           :audio-color-cycle 64}}})  ; random hues, flipped every 64 beats; pick a set in controls
 
@@ -199,7 +200,14 @@
    :jet-count   3        ; number of moving sources in the :jets theme; extras get random palette colours
    :audio-amp   0.035    ; how much an audio band's energy raises its colour's keep (smoke.audio)
    :audio-dt-amp 0.15    ; extra dt kicked in on each beat onset (smoke.audio); base :dt is ~0.04
+   :audio-lead-secs 0.0  ; render look-ahead (s): fire modulation early so the smoke bloom peaks ON the beat
    :audio-floor 0.035    ; in audio mode, how far below :keep silence drops a colour (smaller => denser quiet smoke)
+   ;; beat/onset detection thresholds (smoke.audio): a beat = spectral-flux rising
+   ;; edge above :beat-thresh (after the :beat-gate), re-armed once it drops below
+   ;; :beat-rearm. Higher thresh/gate => only strong kicks count; lower => more onsets.
+   :beat-gate   0.15     ; ignore flux below this, then rescale to 0..1
+   :beat-thresh 0.30     ; rising edge above this fires a beat
+   :beat-rearm  0.12     ; flux must fall below this before the next beat can fire
    :audio-beat-every 4   ; accent every Nth detected beat (downbeat)
    :audio-beat-accent 3.0 ; dt-kick multiplier on the accented (Nth) beat
    :audio-beat-base 2.0  ; dt-kick multiplier on every other beat (between normal=1 and accent)
@@ -227,38 +235,38 @@
    ;; --- audio-driven wind: beats gust the wind, loudness sustains it (smoke.audio) ---
    :audio-wind-amp    0.0 ; beat-gust: wind ×(1 + this × beat-kick)  => punchy surges on onsets
    :audio-wind-energy 0.0 ; loudness: wind ×(1 + this × energy)      => sustained breeze when loud
-   ;; --- voice glow: heuristic vocal-presence (mid/formant-band dominance) deposits
-   ;; a WHITE glow in the centre (smoke.audio sets scene/audio-voice) ---
-   :voice?       false   ; detect vocal-band energy and bloom a white centre glow
-   :voice-amount 0.12    ; per-frame white deposit at full voice (small; it accumulates)
-   :voice-radius 10.0    ; centre-glow radius (cells)
-   :voice-thresh 0.12    ; voice score (0..1) deadzone below which nothing shows
-   :voice-band-lo 0.2    ; vocal region start, as a FRACTION of the spectrum (bass below)
-   :voice-band-hi 0.65   ; vocal region end (treble above); the formant band sits between
-   :voice-contrast 0.6   ; how much bass+treble around it suppress the score (isolates midrange)
+   ;; --- pulse glow: heuristic vocal-presence (mid/formant-band dominance) deposits
+   ;; a WHITE glow in the centre (smoke.audio sets scene/audio-pulse) ---
+   :pulse?       false   ; detect vocal-band energy and bloom a white centre glow
+   :pulse-amount 0.12    ; per-frame white deposit at full pulse (small; it accumulates)
+   :pulse-radius 10.0    ; centre-glow radius (cells)
+   :pulse-thresh 0.12    ; pulse score (0..1) deadzone below which nothing shows
+   :pulse-band-lo 0.2    ; vocal region start, as a FRACTION of the spectrum (bass below)
+   :pulse-band-hi 0.65   ; vocal region end (treble above); the formant band sits between
+   :pulse-contrast 0.6   ; how much bass+treble around it suppress the score (isolates midrange)
    ;; what a VOCAL ONSET spawns at the centre (instead of just the white glow):
-   :voice-agents?    false ; spawn a burst of SHORT-LIVED slime agents => a network blooms + fades
-   :voice-agent-count 90 ; agents per vocal-onset burst (scaled by onset strength)
-   :voice-agent-life 70  ; frames each transient agent lives
-   :voice-agent-deposit 0.5 ; bright deposit per agent (fades as it ages)
-   :voice-agent-speed 1.3
-   :voice-color  [1.0 0.85 0.4] ; colour of the voice agents/ring (warm gold; NOT white)
-   :voice-shape  :point  ; voice source shape: :point (soft gaussian, voice-driven) | :circle |
+   :pulse-agents?    false ; spawn a burst of SHORT-LIVED slime agents => a network blooms + fades
+   :pulse-agent-count 90 ; agents per vocal-onset burst (scaled by onset strength)
+   :pulse-agent-life 70  ; frames each transient agent lives
+   :pulse-agent-deposit 0.5 ; bright deposit per agent (fades as it ages)
+   :pulse-agent-speed 1.3
+   :pulse-color  [1.0 0.85 0.4] ; colour of the pulse agents/ring (warm gold; NOT white)
+   :pulse-shape  :point  ; pulse source shape: :point (soft gaussian, pulse-driven) | :circle |
                           ; :square | :rect | :triangle | :freq (dominant band picks the shape).
                           ; Non-point shapes draw only the OUTLINE, stepped a bit larger EVERY
                           ; FRAME from min..max, then wrap back to min with a fresh shape.
-   :voice-shape-size 90  ; max half-size/radius (cells) the outline grows to before wrapping
-   :voice-shape-min  3   ; starting half-size after each wrap
-   :voice-shape-steps 5  ; number of discrete size steps from min..max before a fresh shape
-   :voice-shape-every 4  ; beats each MIDDLE growth step stays before the next step
-   :voice-shape-edge-beats 16 ; beats the SMALLEST and LARGEST step each stay (longer dwell at the ends)
-   :voice-shape-rest-beats 32 ; beats with NO shape between cycles (quiet gap after each growth)
-   :voice-rotate     0.0 ; shape rotation (rad/frame); 0 = no spin
-   :voice-rect-aspect 1.7 ; how much :rect is wider than tall
-   :voice-line-width 2   ; outline thickness (cells) of the shape
-   :voice-random? false  ; place the voice glow at a random cell each frame (scattered shimmer)
-   :voice-ring   0.0     ; expanding RING impulse on each vocal onset (0 => off)
-   :voice-bloom  0.0     ; whole-image exposure BLOOM ∝ voice score (0 => off; the scene breathes)
+   :pulse-shape-size 90  ; max half-size/radius (cells) the outline grows to before wrapping
+   :pulse-shape-min  3   ; starting half-size after each wrap
+   :pulse-shape-steps 5  ; number of discrete size steps from min..max before a fresh shape
+   :pulse-shape-every 4  ; beats each MIDDLE growth step stays before the next step
+   :pulse-shape-edge-beats 16 ; beats the SMALLEST and LARGEST step each stay (longer dwell at the ends)
+   :pulse-shape-rest-beats 32 ; beats with NO shape between cycles (quiet gap after each growth)
+   :pulse-rotate     0.0 ; shape rotation (rad/frame); 0 = no spin
+   :pulse-rect-aspect 1.7 ; how much :rect is wider than tall
+   :pulse-line-width 2   ; outline thickness (cells) of the shape
+   :pulse-random? false  ; place the pulse glow at a random cell each frame (scattered shimmer)
+   :pulse-ring   0.0     ; expanding RING impulse on each vocal onset (0 => off)
+   :pulse-bloom  0.0     ; whole-image exposure BLOOM ∝ pulse score (0 => off; the scene breathes)
    ;; --- audio palette MOOD: tone the generated vivid hues so it's not only neon ---
    :audio-sat    1.0     ; chroma of the audio palette: 1 = full neon, lower => muted/greyed
    :audio-lift   0.0     ; blend the palette toward WHITE: 0 = none, higher => pastel/washed
@@ -291,6 +299,10 @@
    :p-bright      0.6    ; white-network brightness (:network mode)
    :p-flow?       false  ; INVISIBLE flow network: agents deposit no colour, they stir the fluid
                          ; along their slime traces so the smoke flows down them (works any theme)
+   :p-freq-react? false  ; split agents into one BUCKET per freq band; each band's gain boosts
+                         ; that bucket's speed/deposit (a spectral alternative to the pulse shape)
+   :p-freq-speed  0.0    ; band gain -> bucket SPEED: speed ×(1 + this × gain)
+   :p-freq-deposit 0.0   ; band gain -> bucket DEPOSIT: deposit ×(1 + this × gain)
    :p-flow        12.0   ; TARGET flow speed (cells/tick) :flow agents drive the fluid toward
    :p-flow-blend  0.4    ; blend rate toward that target; BOUNDS u/v so the flow can't blow up
    :p-flow-paint  0.0    ; :flow agents also paint WHITE this much => visible white network (0 => invisible)
@@ -308,16 +320,16 @@
 (defonce audio-dt   (atom nil)) ; transient dt boost on beats, set by smoke.audio; nil/0 => none
 (defonce audio-emit (atom nil)) ; emission (deposit) multiplier from loudness, set by smoke.audio; nil/0 => none
 (defonce audio-wind (atom nil)) ; wind-strength boost from beats/loudness, set by smoke.audio; nil/0 => steady wind
-(defonce audio-voice (atom nil)) ; vocal-presence score (0..1) set by smoke.audio; drives the voice effects
-(defonce voice-agents (atom [])) ; short-lived slime agents spawned at vocal onsets {:x :y :h :life}
-(defonce ^:private voice-prev (atom 0.0)) ; previous voice score, for rising-edge onset detection
+(defonce audio-pulse (atom nil)) ; vocal-presence score (0..1) set by smoke.audio; drives the pulse effects
+(defonce pulse-agents (atom [])) ; short-lived slime agents spawned at vocal onsets {:x :y :h :life}
+(defonce ^:private pulse-prev (atom 0.0)) ; previous pulse score, for rising-edge onset detection
 (defonce recolor-pending? (atom false)) ; smoke.audio sets this on a colour-cycle beat; advance recolours the agents
 (defonce beat-count (atom 0))   ; running detected-beat counter mirrored from smoke.audio (drives shape growth)
-(defonce ^:private voice-cyc (atom {:gstep -1 :shape :circle :ang 0.0 :rot 0.0})) ; beat-stepped growing-shape state
-(def voice-bright-colors        ; bright voice-source colours flipped to on the colour-cycle beat
+(defonce ^:private pulse-cyc (atom {:gstep -1 :shape :circle :ang 0.0 :rot 0.0})) ; beat-stepped growing-shape state
+(def pulse-bright-colors        ; bright pulse-source colours flipped to on the colour-cycle beat
   [[1.0 1.0 1.0] [1.0 0.85 0.4] [1.0 0.35 0.35] [0.35 1.0 0.45] [0.35 0.6 1.0]
    [1.0 0.95 0.35] [1.0 0.45 1.0] [0.4 1.0 1.0] [1.0 0.6 0.2]])
-(defonce voice-color-cur (atom nil)) ; current random bright voice colour (smoke.audio flips it); nil => :voice-color
+(defonce pulse-color-cur (atom nil)) ; current random bright pulse colour (smoke.audio flips it); nil => :pulse-color
 (defonce audio-gains (atom nil)) ; per-band gains [g0 g1 ..] for :audio-white? mode (agents fade white->colour)
 (defonce audio-palette (atom nil)) ; generated vivid-hue palette set by smoke.audio ('r' re-rolls it); nil => theme palette
 (defonce audio-puffs (atom []))   ; pending beat-puff specs from smoke.audio; drained once per frame in `advance`
@@ -453,8 +465,8 @@
    or from the live audio's seed-generated hue palette when one is set ('r')."
   [p]
   (reset! stars [])
-  (reset! voice-agents []) (reset! voice-prev 0.0) (reset! recolor-pending? false)
-  (reset! voice-cyc {:gstep -1 :shape :circle :ang 0.0 :rot 0.0}) (reset! voice-color-cur nil)
+  (reset! pulse-agents []) (reset! pulse-prev 0.0) (reset! recolor-pending? false)
+  (reset! pulse-cyc {:gstep -1 :shape :circle :ang 0.0 :rot 0.0}) (reset! pulse-color-cur nil)
   (let [n   (grid-n p)
         ;; :p-rand-color? => a freshly generated random vivid palette (new set each
         ;; rebuild, i.e. each 'r'); else audio's hue palette / the theme's own.
@@ -507,7 +519,7 @@
                     (aset u  k (float (+ (aget u k)  (* vx g))))
                     (aset v  k (float (+ (aget v k)  (* vy g))))))))))))))
 
-(def ^:const VOICE-AGENT-MAX 1500)   ; cap on live transient voice agents (perf guard)
+(def ^:const PULSE-AGENT-MAX 1500)   ; cap on live transient pulse agents (perf guard)
 
 (defn- stamp-shape-outline!
   "Draw the ROTATED OUTLINE (band of width `lw`) of `shape` centred at (ci,cj):
@@ -558,37 +570,37 @@
                 (recur (inc oi))))))
         (recur (inc oj))))))
 
-(defn emit-voice!
-  "Voice-driven centre effects, each an INDEPENDENT toggle, all scaled by the
-   vocal-presence score @audio-voice (deadzone :voice-thresh), coloured :voice-color:
-     :voice-amount  — a continuous glow at the centre (radius :voice-radius; tiny
+(defn emit-pulse!
+  "Pulse-driven centre effects, each an INDEPENDENT toggle, all scaled by the
+   vocal-presence score @audio-pulse (deadzone :pulse-thresh), coloured :pulse-color:
+     :pulse-amount  — a continuous glow at the centre (radius :pulse-radius; tiny
                       radius ~1 => a near-point source the fluid smears into filaments).
-     :voice-ring    — an expanding ring (puffs round a circle, outward velocity) on each
+     :pulse-ring    — an expanding ring (puffs round a circle, outward velocity) on each
                       vocal ONSET (rising edge).
-     :voice-agents? — a burst of SHORT-LIVED slime agents on each onset => a network
+     :pulse-agents? — a burst of SHORT-LIVED slime agents on each onset => a network
                       blooms from the centre then fades.
-     (:voice-bloom is applied in render-pixels! — whole-image exposure pulse.)"
+     (:pulse-bloom is applied in render-pixels! — whole-image exposure pulse.)"
   [fl p]
-  (let [v   (double (or @audio-voice 0.0))
-        thr (double (:voice-thresh p 0.12))
+  (let [v   (double (or @audio-pulse 0.0))
+        thr (double (:pulse-thresh p 0.12))
         over (- v thr)
         n   (long (:n fl))
-        col (or @voice-color-cur (:voice-color p [1.0 0.85 0.4]))  ; random bright colour flips it
+        col (or @pulse-color-cur (:pulse-color p [1.0 0.85 0.4]))  ; random bright colour flips it
         cr (double (nth col 0)) cg (double (nth col 1)) cb (double (nth col 2))
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
         ci (quot n 2) cj (quot n 2)]
-    ;; (1) continuous glow in voice-colour (radius small => point source). With
-    ;; :voice-random? the point jumps to a fresh random cell each frame (scattered
-    ;; voice shimmer) instead of sitting at the centre.
-    (when (pos? (double (:voice-amount p 0.0)))
-      (let [shape (:voice-shape p :point)
-            gi (if (:voice-random? p) (long (rand n)) ci)
-            gj (if (:voice-random? p) (long (rand n)) cj)]
+    ;; (1) continuous glow in pulse-colour (radius small => point source). With
+    ;; :pulse-random? the point jumps to a fresh random cell each frame (scattered
+    ;; pulse shimmer) instead of sitting at the centre.
+    (when (pos? (double (:pulse-amount p 0.0)))
+      (let [shape (:pulse-shape p :point)
+            gi (if (:pulse-random? p) (long (rand n)) ci)
+            gj (if (:pulse-random? p) (long (rand n)) cj)]
         (if (= shape :point)
-          ;; soft gaussian point — voice-score driven (only when a voice is present)
+          ;; soft gaussian point — pulse-score driven (only when a pulse is present)
           (when (pos? over)
-            (let [amt0 (* (double (:voice-amount p)) over)
-                  sig (max 0.2 (double (:voice-radius p 10.0)))
+            (let [amt0 (* (double (:pulse-amount p)) over)
+                  sig (max 0.2 (double (:pulse-radius p 10.0)))
                   inv (/ 1.0 (* 2.0 sig sig))
                   ri (long (Math/ceil (* 2.5 sig)))]
               (dotimes [a (inc (* 2 ri))]
@@ -602,21 +614,21 @@
                       (aset dg k (float (+ (aget dg k) (* g cg))))
                       (aset db k (float (+ (aget db k) (* g cb))))))))))
           ;; geometric SHAPE outline, beat-synced: a cycle = GROW (steps × every
-          ;; beats, jumping one size step that STAYS every :voice-shape-every beats)
-          ;; then a REST of :voice-shape-rest-beats beats with NO shape, then a
+          ;; beats, jumping one size step that STAYS every :pulse-shape-every beats)
+          ;; then a REST of :pulse-shape-rest-beats beats with NO shape, then a
           ;; fresh shape. The dominant FREQ band picks the shape; rotation applies
           ;; ONLY to triangles (bass third => spin one way, treble => the other).
-          (let [cyc   @voice-cyc
-                every (long (max 1 (:voice-shape-every p 4)))
-                edge  (long (max 1 (:voice-shape-edge-beats p 16)))
-                steps (long (max 1 (:voice-shape-steps p 5)))
-                rest  (long (max 0 (:voice-shape-rest-beats p 16)))
+          (let [cyc   @pulse-cyc
+                every (long (max 1 (:pulse-shape-every p 4)))
+                edge  (long (max 1 (:pulse-shape-edge-beats p 16)))
+                steps (long (max 1 (:pulse-shape-steps p 5)))
+                rest  (long (max 0 (:pulse-shape-rest-beats p 16)))
                 ;; per-step dwell: edge beats for the smallest & largest, every for middle
                 step-dur (fn [s] (if (or (zero? s) (= s (dec steps))) edge every))
                 grow  (reduce + (map step-dur (range steps)))
                 cycle (max 1 (+ grow rest))
-                rmin  (double (:voice-shape-min p 3))
-                rmax  (double (:voice-shape-size p 90))
+                rmin  (double (:pulse-shape-min p 3))
+                rmax  (double (:pulse-shape-size p 90))
                 bc    (long @beat-count)
                 bphase (mod bc cycle)                  ; beat within the grow+rest cycle
                 new-beat? (not= bc (long (:last-bc cyc -1)))
@@ -647,40 +659,40 @@
                 ;; rotation ONLY for triangles; direction from the freq band
                 rot  (if fresh?
                        (if (= shp :triangle)
-                         (* (double (:voice-rotate p 0.0)) (if (< frac 0.5) -1.0 1.0))
+                         (* (double (:pulse-rotate p 0.0)) (if (< frac 0.5) -1.0 1.0))
                          0.0)
                        (double (:rot cyc 0.0)))
                 r    (+ rmin (* (- rmax rmin) (/ (double s) (double (max 1 (dec steps))))))
                 ang  (+ (double (:ang cyc 0.0)) rot)
-                lw   (double (:voice-line-width p 2))
-                amt  (double (:voice-amount p 1.0))
-                aspect (double (:voice-rect-aspect p 1.7))]
-            (reset! voice-cyc {:last-bc bc :shape shp :ang ang :rot rot})
+                lw   (double (:pulse-line-width p 2))
+                amt  (double (:pulse-amount p 1.0))
+                aspect (double (:pulse-rect-aspect p 1.7))]
+            (reset! pulse-cyc {:last-bc bc :shape shp :ang ang :rot rot})
             (when growing?
               (stamp-shape-outline! fl ci cj shp r aspect lw ang amt cr cg cb))))))
     ;; (2)+(3) rising-edge onset => expanding ring + short-lived agent burst
-    (let [pv (double @voice-prev)]
+    (let [pv (double @pulse-prev)]
       (when (and (> v thr) (<= pv thr))
         (let [strength (min 1.0 v)]
-          (when (pos? (double (:voice-ring p 0.0)))
-            (let [k 24 vel (* (double (:voice-ring p)) (+ 0.5 (* 0.5 strength))) sr 0.04]
+          (when (pos? (double (:pulse-ring p 0.0)))
+            (let [k 24 vel (* (double (:pulse-ring p)) (+ 0.5 (* 0.5 strength))) sr 0.04]
               (dotimes [i k]
                 (let [ang (* TAU (/ (double i) k)) dx (Math/cos ang) dy (Math/sin ang)]
                   (swap! audio-puffs conj
                          {:x (+ 0.5 (* sr dx)) :y (+ 0.5 (* sr dy))
                           :color col :r 5.0 :amount 1.5 :vx (* vel dx) :vy (* vel dy)})))))
-          (when (and (:voice-agents? p) (< (count @voice-agents) VOICE-AGENT-MAX))
-            (let [nb (long (* (double (:voice-agent-count p 90)) strength))
-                  life (long (:voice-agent-life p 70)) cx (double ci) cy (double cj)]
-              (swap! voice-agents into
+          (when (and (:pulse-agents? p) (< (count @pulse-agents) PULSE-AGENT-MAX))
+            (let [nb (long (* (double (:pulse-agent-count p 90)) strength))
+                  life (long (:pulse-agent-life p 70)) cx (double ci) cy (double cj)]
+              (swap! pulse-agents into
                      (repeatedly nb (fn [] {:x cx :y cy :h (* TAU (double (rand))) :life life})))))))
-      (reset! voice-prev v))
-    ;; step live voice agents: slime-steer on the voice colour, deposit (fading with
+      (reset! pulse-prev v))
+    ;; step live pulse agents: slime-steer on the pulse colour, deposit (fading with
     ;; age), move, cull the dead
-    (when (seq @voice-agents)
+    (when (seq @pulse-agents)
       (let [so (double (:p-sensor p 9.0)) sa (double (:p-sense-angle p 0.5))
-            ra (double (:p-turn p 0.45)) ss (double (:voice-agent-speed p 1.3))
-            dep (double (:voice-agent-deposit p 0.5)) life0 (double (max 1 (long (:voice-agent-life p 70))))
+            ra (double (:p-turn p 0.45)) ss (double (:pulse-agent-speed p 1.3))
+            dep (double (:pulse-agent-deposit p 0.5)) life0 (double (max 1 (long (:pulse-agent-life p 70))))
             sns (fn ^double [^double x ^double y]
                   (let [k (f/idx n (long (mod x n)) (long (mod y n)))]
                     (+ (* cr (aget dr k)) (* cg (aget dg k)) (* cb (aget db k)))))
@@ -701,8 +713,8 @@
                                            (aset dg k (float (+ (aget dg k) (* f cg))))
                                            (aset db k (float (+ (aget db k) (* f cb)))))
                                          {:x nx :y ny :h h2 :life life})))
-                                   @voice-agents))]
-        (reset! voice-agents stepped)))))
+                                   @pulse-agents))]
+        (reset! pulse-agents stepped)))))
 
 (defn advance
   "One tick: velocity → (Physarum emission for :slime/:network) → advect/dissipate
@@ -710,7 +722,7 @@
   [fl p]
   (when-let [h @audio-hook] (h))  ; refresh audio-keep/audio-dt from playback, in lockstep with frames
   (emit-puffs! fl)                ; stamp beat puffs (density + impulse) before the velocity step
-  (emit-voice! fl p)              ; white centre glow while a voice is present
+  (emit-pulse! fl p)              ; white centre glow while a pulse is present
   (let [dt (+ (double (:dt p)) (double (or @audio-dt 0.0)))  ; beat onsets kick dt up briefly
         fl (f/vel-step fl (:visc p) dt (:buoy p))
         m  (mode p)]
@@ -725,7 +737,7 @@
       ;; rides their traces. Runs AFTER vel-step so advect-colors! below carries
       ;; the colour along the freshly-injected currents. Works under any theme.
       (:p-flow? p)
-      (phys/step! (:phys fl) fl (assoc p :p-mode :flow))
+      (phys/step! (:phys fl) fl (assoc p :p-mode :flow :audio-gains @audio-gains))
       (#{:smoke :trail :haze} m)
       (let [em (double (or @audio-emit 0.0))                ; louder audio => more smoke deposited
             pp (assoc p :p-mode m
@@ -843,9 +855,9 @@
         ^floats br (:br fl) ^floats bg (:bg fl) ^floats bb (:bb fl)
         ^floats trail (:trail (:phys fl))
         netw   (double (if (= (mode p) :trail) (:p-bright p) 0.0))
-        ;; :voice-bloom => whole-image exposure pulse with the vocal-presence score
+        ;; :pulse-bloom => whole-image exposure pulse with the vocal-presence score
         ^floats tl (tone-lut (* (double (:expos p))
-                                (+ 1.0 (* (double (:voice-bloom p 0.0)) (double (or @audio-voice 0.0))))))
+                                (+ 1.0 (* (double (:pulse-bloom p 0.0)) (double (or @audio-pulse 0.0))))))
         tscale (/ (double (dec TLUTN)) CHMAX)
         ;; saturation: amplify each pixel's chroma around its mean so the dominant
         ;; hue shows instead of washing to white. 1.0 = neutral; higher = vivid.

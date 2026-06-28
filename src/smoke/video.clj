@@ -24,7 +24,8 @@
    Convert first if needed:  ffmpeg -i song.mp3 song.wav"
   (:require [smoke.scene :as scene]
             [smoke.fluid :as f]
-            [smoke.audio :as audio])
+            [smoke.audio :as audio]
+            [clojure.string])
   (:import [java.io OutputStream File]
            [java.lang ProcessBuilder ProcessBuilder$Redirect]))
 
@@ -50,21 +51,27 @@
    longer video stream sets the duration and the last seconds are simply silent.
    When `pad` = [W H], centre the rendered frame on a black W×H canvas WITHOUT
    scaling (letter/pillar-box), so a square render keeps its shape at 16:9."
-  [out-path w h fps audio crf start-secs tail? pad]
-  (-> ["ffmpeg" "-y" "-hide_banner" "-loglevel" "warning"
-       ;; video from stdin (raw frames)
-       "-f" "rawvideo" "-pixel_format" "rgb24"
-       "-video_size" (str w "x" h) "-framerate" (str fps) "-i" "pipe:0"]
-      ;; audio input, optionally seeked so it lines up with :start-secs
-      (cond-> (and audio (pos? (double start-secs))) (into ["-ss" (str start-secs)]))
-      (cond-> audio (into ["-i" audio]))
-      ;; pad onto black at NATIVE size (no scale): centre the WxH input in the target
-      (cond-> pad (into ["-vf" (format "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black"
-                                       (long (first pad)) (long (second pad)))]))
-      (into ["-c:v" "libx264" "-pix_fmt" "yuv420p" "-preset" "medium" "-crf" (str crf)])
-      (cond-> audio (into ["-c:a" "aac" "-b:a" "192k"]))
-      (cond-> (and audio (not tail?)) (into ["-shortest"]))
-      (conj out-path)))
+  [out-path w h fps audio crf start-secs tail? pad sharpen]
+  (let [filters (cond-> []
+                  ;; unsharp mask => crisp edges even from a coarse sim grid
+                  (and sharpen (pos? (double sharpen)))
+                  (conj (format "unsharp=5:5:%.3f:5:5:0.0" (double sharpen)))
+                  ;; pad onto black at NATIVE size (no scale): centre WxH in the target
+                  pad
+                  (conj (format "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black"
+                                (long (first pad)) (long (second pad)))))]
+    (-> ["ffmpeg" "-y" "-hide_banner" "-loglevel" "warning"
+         ;; video from stdin (raw frames)
+         "-f" "rawvideo" "-pixel_format" "rgb24"
+         "-video_size" (str w "x" h) "-framerate" (str fps) "-i" "pipe:0"]
+        ;; audio input, optionally seeked so it lines up with :start-secs
+        (cond-> (and audio (pos? (double start-secs))) (into ["-ss" (str start-secs)]))
+        (cond-> audio (into ["-i" audio]))
+        (cond-> (seq filters) (into ["-vf" (clojure.string/join "," filters)]))
+        (into ["-c:v" "libx264" "-pix_fmt" "yuv420p" "-preset" "medium" "-crf" (str crf)])
+        (cond-> audio (into ["-c:a" "aac" "-b:a" "192k"]))
+        (cond-> (and audio (not tail?)) (into ["-shortest"]))
+        (conj out-path))))
 
 (defn render!
   "Render an offline smoke video to `out-path` (MP4). Options:
@@ -87,7 +94,7 @@
                  size (no scaling). Use with a square :render to put it on a 16:9
                  YouTube frame with black side-bars instead of cropping/stretching.
    Returns {:out path :frames n :render [w h] :fps fps :seconds dur}."
-  [out-path & {:keys [audio fps seconds start-secs render grid preset params crf warmup tail-secs pad]
+  [out-path & {:keys [audio fps seconds start-secs render grid preset params crf warmup tail-secs pad sharpen]
                :or   {fps 60 crf 18 warmup 90 start-secs 0 tail-secs 0}}]
   (let [fps (long fps) start (double start-secs)
         p   (cond-> scene/default-params
@@ -102,7 +109,7 @@
         tail-frames (long (Math/round (* (double fps) (double tail-secs))))
         total   (+ nframes tail-frames)
         w (scene/render-w p) h (scene/render-h p)
-        ff (ffmpeg-cmd out-path w h fps audio crf start (pos? tail-frames) pad)
+        ff (ffmpeg-cmd out-path w h fps audio crf start (pos? tail-frames) pad sharpen)
         log (File/createTempFile "smoke-ffmpeg" ".log")
         proc (.start (doto (ProcessBuilder. ^java.util.List ff)
                        (.redirectOutput ProcessBuilder$Redirect/DISCARD)
@@ -128,10 +135,14 @@
             ;; song portion: drive modulation. At the tail boundary, clear all audio
             ;; atoms ONCE so the tail runs with NO reactivity (the 'without audio' look).
             (cond
-              (< i nframes) (when analysis (audio/modulate! analysis (+ start (/ (double i) fps)) p))
+              ;; :audio-lead-secs looks AHEAD so deposits fire slightly early and the
+              ;; smoke's bloom peaks ON the beat (compensates the keep/advection lag)
+              (< i nframes) (when analysis
+                              (audio/modulate! analysis (+ start (/ (double i) fps)
+                                                           (double (:audio-lead-secs p 0.0))) p))
               (= i nframes) (do (reset! scene/audio-keep nil) (reset! scene/audio-dt nil)
                                 (reset! scene/audio-emit nil) (reset! scene/audio-gains nil)
-                                (reset! scene/audio-wind nil) (reset! scene/audio-voice nil)
+                                (reset! scene/audio-wind nil) (reset! scene/audio-pulse nil)
                                 (reset! scene/audio-puffs [])))
             (scene/seed-sources! fl p)
             (let [fl (scene/advance fl p)]

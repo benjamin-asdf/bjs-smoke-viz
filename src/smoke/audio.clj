@@ -265,17 +265,17 @@
     true
     (catch Throwable _ false)))
 
-(defn- voice-score
+(defn- pulse-score
   "Heuristic 'vocal presence' (0..1) from band `gains`: energy concentrated in the
    mid/formant region (~250 Hz–3 kHz) RELATIVE to the bass + treble around it. NOT
    true vocal isolation — a midrange-dominance detector — but it tracks sung/spoken
-   passages well enough to drive a centre glow. The vocal band is :voice-band-lo ..
-   :voice-band-hi as FRACTIONS of the spectrum; :voice-contrast is how strongly the
+   passages well enough to drive a centre glow. The vocal band is :pulse-band-lo ..
+   :pulse-band-hi as FRACTIONS of the spectrum; :pulse-contrast is how strongly the
    surrounding bass/treble suppress the score (higher => more selective)."
   ^double [^doubles gains p]
   (let [n   (alength gains)
-        lo  (max 0 (long (* (double (:voice-band-lo p 0.2)) n)))
-        hi  (min n (long (max (inc lo) (long (* (double (:voice-band-hi p 0.65)) n)))))
+        lo  (max 0 (long (* (double (:pulse-band-lo p 0.2)) n)))
+        hi  (min n (long (max (inc lo) (long (* (double (:pulse-band-hi p 0.65)) n)))))
         meanr (fn ^double [^long a ^long b]
                 (if (< a b)
                   (loop [i a s 0.0] (if (< i b) (recur (inc i) (+ s (aget gains i))) (/ s (double (- b a)))))
@@ -283,7 +283,7 @@
         mid   (meanr lo hi)
         below (meanr 0 lo)
         above (meanr hi n)
-        c     (double (:voice-contrast p 0.6))]
+        c     (double (:pulse-contrast p 0.6))]
     (-> (- mid (* c 0.5 (+ below above))) (max 0.0) (min 1.0))))
 
 (defn- push-puff!
@@ -369,10 +369,10 @@
       (let [pal (or @scene/audio-palette (base-palette p))  ; same hues the agents wear
 
               ;; gate the onset so only real beats fire, then sharpen to 0..1
-            g   0.15
+            g   (double (:beat-gate p 0.15))
             fv  (max 0.0 (/ (- (flux-at analysis secs) g) (- 1.0 g)))
               ;; count beats (rising-edge trigger, debounced); accent every Nth one
-            _   (when (and (not @armed) (> fv 0.30))
+            _   (when (and (not @armed) (> fv (double (:beat-thresh p 0.30))))
                   (reset! armed true) (swap! beat-n inc) (swap! scene/beat-count inc)
                   ;; colour-cycle: every Nth beat roll a fresh palette (puffs read it
                   ;; live; advance repaints the agents via scene/recolor-pending?)
@@ -380,9 +380,9 @@
                     (when (and (pos? cyc) (zero? (mod @beat-n cyc)))
                       (reroll-colors! (color-count p))
                       (reset! scene/recolor-pending? true)
-                      ;; flip the voice source to a fresh random bright colour too
-                      (reset! scene/voice-color-cur (rand-nth scene/voice-bright-colors)))))
-            _   (when (< fv 0.12) (reset! armed false))
+                      ;; flip the pulse source to a fresh random bright colour too
+                      (reset! scene/pulse-color-cur (rand-nth scene/pulse-bright-colors)))))
+            _   (when (< fv (double (:beat-rearm p 0.12))) (reset! armed false))
               ;; puffs: :puff-continuous? => EVERY band puffs each frame from its
               ;; current gain (no threshold, the spectrum itself makes the puffs);
               ;; else a single onset-triggered puff with its own (lower) threshold
@@ -416,7 +416,7 @@
             ;; agents stay a faint static white haze => no keep/emit modulation
           (:audio-puffs? p)
           (do (reset! scene/audio-keep nil)
-              (reset! scene/audio-gains gains)   ; expose gains so emit-voice! can pick a shape by freq
+              (reset! scene/audio-gains gains)   ; expose gains so emit-pulse! can pick a shape by freq
               (reset! scene/audio-emit nil))
             ;; agents mode: gains drive per-colour-group deposit in physarum; keep scalar,
             ;; NO global emit boost (the per-group bloom replaces it) => clean, not muddy
@@ -434,18 +434,21 @@
           (do (reset! scene/audio-keep (channel-keep gains pal (:keep p) (:audio-amp p) (:audio-floor p)))
               (reset! scene/audio-gains nil)
               (reset! scene/audio-emit emit)))
+        ;; expose the band gains regardless of mode, so :p-freq-react? buckets work
+        ;; even with the puffs turned off
+        (reset! scene/audio-gains gains)
         (reset! scene/audio-dt (* (double (:audio-dt-amp p)) k))
           ;; wind surges with the beat (kick) and stays up while loud (energy)
         (reset! scene/audio-wind (+ (* (double (:audio-wind-amp p 0.0)) k)
                                     (* (double (:audio-wind-energy p 0.0)) energy)))
-          ;; heuristic vocal presence => white centre glow (scene/emit-voice!)
-        (reset! scene/audio-voice (when (:voice? p) (voice-score gains p))))
+          ;; heuristic vocal presence => white centre glow (scene/emit-pulse!)
+        (reset! scene/audio-pulse (when (:pulse? p) (pulse-score gains p))))
       (do (reset! scene/audio-keep nil)
           (reset! scene/audio-gains nil)
           (reset! scene/audio-dt nil)
           (reset! scene/audio-emit nil)
           (reset! scene/audio-wind nil)
-          (reset! scene/audio-voice nil)
+          (reset! scene/audio-pulse nil)
           (reset! kick 0.0)))))
 
 (defn- tick! []
@@ -464,8 +467,8 @@
   (reset! kick 0.0) (reset! beat-n 0) (reset! armed false) (reset! puff-armed false) (reset! scene/beat-count 0)
   (reset! scene/audio-puffs [])
   (reset! scene/audio-wind nil)
-  (reset! scene/audio-voice nil)
-  (reset! scene/voice-color-cur nil)
+  (reset! scene/audio-pulse nil)
+  (reset! scene/pulse-color-cur nil)
   (reroll-colors! (color-count p)))
 
 (defn band-count
@@ -486,12 +489,12 @@
   (reset! kick 0.0) (reset! beat-n 0) (reset! armed false) (reset! puff-armed false) (reset! scene/beat-count 0)
   (reset! scene/audio-puffs [])
   (reset! scene/audio-palette nil)  ; back to the theme's own palette
-  (reset! scene/voice-color-cur nil)
+  (reset! scene/pulse-color-cur nil)
   (reset! scene/audio-keep nil)
   (reset! scene/audio-dt nil)
   (reset! scene/audio-emit nil)
   (reset! scene/audio-wind nil)
-  (reset! scene/audio-voice nil))
+  (reset! scene/audio-pulse nil))
 
 (defn start!
   "Analyse `path`, play it via an external player, and modulate per-colour keep
@@ -606,7 +609,7 @@
   (a/play-with-sim!
    "/home/benj/repos/musicanalysis/aldebara3min.wav")
 
-;; ── how to start the PUFFS version (spectral puffs + slime flow + voice) ──
+  ;; ── how to start the PUFFS version (spectral puffs + slime flow + pulse) ──
   (swap! smoke.core/params merge (smoke.scene/preset-params :puffs))
   (a/play-with-sim! "/home/benj/repos/musicanalysis/aldebara.wav") ; full song
   (a/play-with-sim! "/home/benj/repos/musicanalysis/alicante.wav") ; Boris Brejcha — Alicante
@@ -614,17 +617,72 @@
   (swap! smoke.core/params merge
 
          {:keep 0.92
-          :voice-amount 1.0 :voice-random? false :voice-agents? true :voice-agent-count 130 :voice-ring 0.0 :voice-bloom 0.0})
+          :pulse-amount 1.0 :pulse-random? false :pulse-agents? true :pulse-agent-count 130 :pulse-ring 0.0 :pulse-bloom 0.0})
 
-;; ── voice centre modes (live-switch; needs vocals/onsets to fire) ──
-  (swap! smoke.core/params merge {:voice-amount 2.5 :voice-radius 0.3 :voice-random? false :voice-agents? false :voice-ring 0.0 :voice-bloom 0.0}) ; POINT
-  (swap! smoke.core/params merge {:voice-amount 2.0 :voice-radius 0.6 :voice-random? true  :voice-agents? false :voice-ring 0.0 :voice-bloom 0.0}) ; SCATTER
-  (swap! smoke.core/params merge {:voice-amount 0.0 :voice-random? false :voice-agents? false :voice-ring 11.0 :voice-bloom 0.0}) ; RING
-  (swap! smoke.core/params merge {:voice-amount 0.0 :voice-random? false :voice-agents? true :voice-agent-count 130 :voice-ring 0.0 :voice-bloom 0.0}) ; AGENTS
-  (swap! smoke.core/params merge {:voice-amount 0.0 :voice-random? false :voice-agents? false :voice-ring 0.0 :voice-bloom 1.0}) ; BLOOM
-  (swap! smoke.core/params merge {:voice-amount 1.5 :voice-radius 0.3 :voice-random? true :voice-agents? true :voice-ring 7.0 :voice-bloom 0.5}) ; ALL
+  ;; ── pulse centre modes (live-switch; needs vocals/onsets to fire) ──
+  (swap! smoke.core/params merge {:pulse-amount 2.5 :pulse-radius 0.3 :pulse-random? false :pulse-agents? false :pulse-ring 0.0 :pulse-bloom 0.0}) ; POINT
+  (swap! smoke.core/params merge {:pulse-amount 2.0 :pulse-radius 0.6 :pulse-random? true  :pulse-agents? false :pulse-ring 0.0 :pulse-bloom 0.0}) ; SCATTER
+  (swap! smoke.core/params merge {:pulse-amount 0.0 :pulse-random? false :pulse-agents? false :pulse-ring 11.0 :pulse-bloom 0.0}) ; RING
+  (swap! smoke.core/params merge {:pulse-amount 0.0 :pulse-random? false :pulse-agents? true :pulse-agent-count 130 :pulse-ring 0.0 :pulse-bloom 0.0}) ; AGENTS
+  (swap! smoke.core/params merge {:pulse-amount 0.0 :pulse-random? false :pulse-agents? false :pulse-ring 0.0 :pulse-bloom 1.0}) ; BLOOM
+  (swap! smoke.core/params merge {:pulse-amount 1.5 :pulse-radius 0.3 :pulse-random? true :pulse-agents? true :pulse-ring 7.0 :pulse-bloom 0.5}) ; ALL
 
   ;; audio palette: random by default; pick a curated set then re-roll
   (swap! smoke.core/params assoc :audio-palette-set :sunset) (a/reseed-colors!) ; :ice :ember :forest :ocean :sepia :pastel :candy :autumn / nil=random
+
+  ;; ── d-neuland live state (puffs off, agent freq-buckets, pulse point + ring/
+  ;;    agents/bloom, less wind, keep 0.96) — restore then play ──
+  (reset! smoke.core/params
+          {:theme :puffs :keep 0.96 :buoy 0.3 :expos 0.95 :saturation 3.2 :wind 1.0
+           :visc 1.0E-4 :dt 0.0405 :edge-margin 1 :blur-passes 0 :noise-scale 2.0 :noise-speed 0.012
+           :p-count 2500 :p-sensor 9.0 :p-sense-angle 0.5 :p-turn 0.45 :p-speed 1.2 :p-deposit 0.28
+           :p-decay 0.9 :p-wander 0.2 :p-wind 0.0 :p-bright 0.6 :p-rand-color? false :p-rand-colors 6
+           :p-flow? true :p-flow 5.0 :p-flow-blend 0.4 :p-flow-paint 0.0
+           :p-freq-react? true :p-freq-speed 3.0 :p-freq-deposit 3.0
+           :audio-puffs? true :audio-bands 10 :puff-continuous? false :puff-thresh 2.0
+           :puff-spectral-scale 0.26 :puff-gain-gamma 0.5 :puff-radius 7.0 :puff-amount 2.6
+           :puff-vel 7.0 :puff-spawn-r 0.28 :puff-angle 0.0
+           :audio-dt-amp 0.09 :audio-amp 0.035 :audio-floor 0.035 :audio-emit-amp 0.9 :audio-emit-floor 0.45
+           :audio-beat-every 4 :audio-beat-accent 3.0 :audio-beat-base 2.0
+           :audio-wind-amp 0.7 :audio-wind-energy 0.6
+           :audio-sat 0.85 :audio-lift 0.1 :audio-palette-set nil :audio-color-cycle 64 :audio-colors 7
+           :audio-white? false :audio-white-density 0.5 :audio-agents? false :audio-agent-amp 1.5
+           :pulse? true :pulse-amount 1.0 :pulse-radius 0.3 :pulse-random? true :pulse-shape :point
+           :pulse-color [1.0 0.85 0.4] :pulse-thresh 0.12 :pulse-contrast 0.6 :pulse-band-lo 0.2 :pulse-band-hi 0.65
+           :pulse-agents? true :pulse-agent-count 90 :pulse-agent-life 70 :pulse-agent-deposit 0.5 :pulse-agent-speed 1.3
+           :pulse-ring 7.0 :pulse-bloom 0.5 :pulse-line-width 3 :pulse-rect-aspect 1.7 :pulse-rotate 0.08
+           :pulse-shape-size 90 :pulse-shape-min 3 :pulse-shape-steps 5 :pulse-shape-every 4
+           :pulse-shape-edge-beats 16 :pulse-shape-rest-beats 32
+           :stars false :star-thresh 2.5 :star-radius 3 :star-speed 0.25
+           :jet-color [1.0 0.3 0.08] :jet-count 3 :palette [[1.0 1.0 1.0]] :boids nil
+           :depth-layer false :depth-layers 3 :depth-scale 0.35 :depth-dim 0.5})
+  (a/play-with-sim! "/home/benj/repos/musicanalysis/d-neuland-vom-feisten-i-chaos.wav")
+
+  ;; ── beat/onset detection: play with the thresholds (a beat = spectral-flux
+  ;;    rising edge above :beat-thresh after :beat-gate, re-armed below :beat-rearm) ──
+  (swap! smoke.core/params assoc :beat-thresh 0.45 :beat-gate 0.20) ; only strong kicks => fewer beats
+  (swap! smoke.core/params assoc :beat-thresh 0.18 :beat-rearm 0.08) ; more/finer onsets => more beats
+
+  (swap! smoke.core/params assoc :beat-gate 0.15 :beat-thresh 0.30 :beat-rearm 0.12)
+
+  ;; ── PULSE (centre source) activation: a mid-band onset detector (was "voice").
+  ;;    :pulse-thresh = score deadzone (lower => fires more often / on softer mids),
+  ;;    :pulse-contrast = how strongly bass+treble suppress it (selectivity),
+  ;;    :pulse-band-lo/hi = which spectral fraction counts as the pulse band ──
+  (swap! smoke.core/params assoc :pulse-thresh 0.06) ; more sensitive
+  (swap! smoke.core/params assoc :pulse-thresh 0.20) ; only strong mids
+
+
+  (swap! smoke.core/params assoc :pulse-contrast 1.0)
+
+
+
+  (swap! smoke.core/params assoc :pulse-band-lo 0.1 :pulse-band-hi 0.5) ; pulse on lower freqs
+  (swap! smoke.core/params assoc :pulse-band-lo 0.4 :pulse-band-hi 0.9) ; pulse on higher freqs
+
+
+
+
+  (swap! smoke.core/params assoc :pulse-thresh 0.12 :pulse-contrast 0.6 :pulse-band-lo 0.2 :pulse-band-hi 0.65) ; defaults
 
   (a/stop!))

@@ -143,7 +143,13 @@
         so    (double (:p-sensor p)) sa (double (:p-sense-angle p))
         ra    (double (:p-turn p))   ss (double (:p-speed p))
         dep   (double (:p-deposit p)) windk (double (:p-wind p))
-        wdep  (* dep (double (:audio-white-density p 0.5)))]  ; dimmer deposit for white mode
+        wdep  (* dep (double (:audio-white-density p 0.5)))  ; dimmer deposit for white mode
+        ;; FREQ-REACT: split agents into one BUCKET per frequency band; each band's
+        ;; gain boosts that bucket's speed (:p-freq-speed) and/or deposit (:p-freq-deposit)
+        freq? (boolean (and gains (:p-freq-react? p)))
+        nb    (long (if gains (alength gains) 1))
+        fsa   (double (:p-freq-speed p 0.0))
+        fda   (double (:p-freq-deposit p 0.0))]
     (dotimes [i cnt]
       (let [x (aget xs i) y (aget ys i) h (aget hs i)
             ;; each agent senses ITS OWN colour (weighted density) so the colours
@@ -165,10 +171,14 @@
                          (> cl cr)                   (- h ra)
                          :else                       (+ h ra)))
             h2 (if (pos? wander) (+ (double hsteer) (* wander 2.0 (- (double (rand)) 0.5))) (double hsteer))
+            ;; this agent's frequency-band gain (bucket = even split of agents over bands)
+            gband (if freq? (aget gains (min (dec nb) (quot (* i nb) cnt))) 0.0)
+            ssi (if freq? (* ss (+ 1.0 (* fsa gband))) ss)   ; band energy => bucket speed
+            depi (if freq? (* dep (+ 1.0 (* fda gband))) dep) ; band energy => bucket deposit
             ix (long (wrap x n)) iy (long (wrap y n))
             wk (f/idx n ix iy)
-            nx (wrap (+ x (* ss (Math/cos h2)) (* windk (aget u wk))) n)
-            ny (wrap (+ y (* ss (Math/sin h2)) (* windk (aget v wk))) n)
+            nx (wrap (+ x (* ssi (Math/cos h2)) (* windk (aget u wk))) n)
+            ny (wrap (+ y (* ssi (Math/sin h2)) (* windk (aget v wk))) n)
             dk (f/idx n (long nx) (long ny))]
         (aset xs i (float nx))
         (aset ys i (float ny))
@@ -177,9 +187,9 @@
           flow?
           ;; SLIME: deposit the agent's own COLOUR (=> coloured networks, no blob)
           ;; AND push the fluid along its heading so the smoke flows down the trace.
-          (do (aset dr dk (+ (aget dr dk) (float (* dep (aget ar i)))))
-              (aset dg dk (+ (aget dg dk) (float (* dep (aget ag i)))))
-              (aset db dk (+ (aget db dk) (float (* dep (aget ab i)))))
+          (do (aset dr dk (+ (aget dr dk) (float (* depi (aget ar i)))))
+              (aset dg dk (+ (aget dg dk) (float (* depi (aget ag i)))))
+              (aset db dk (+ (aget db dk) (float (* depi (aget ab i)))))
               ;; BLEND u/v toward the agent's heading-flow (bounded => no blow-up):
               ;; u += a·(target − u). |u| stays ≈ flowk regardless of agent count.
               (aset u dk (float (+ (aget u dk) (* flowa (- (* flowk (Math/cos h2)) (aget u dk))))))
@@ -207,9 +217,9 @@
             (aset dg dk (+ (aget dg dk) (float eg)))
             (aset db dk (+ (aget db dk) (float eb))))
           :else
-          (do (aset dr dk (+ (aget dr dk) (float (* dep (aget ar i)))))
-              (aset dg dk (+ (aget dg dk) (float (* dep (aget ag i)))))
-              (aset db dk (+ (aget db dk) (float (* dep (aget ab i)))))))))
+          (do (aset dr dk (+ (aget dr dk) (float (* depi (aget ar i)))))
+              (aset dg dk (+ (aget dg dk) (float (* depi (aget ag i)))))
+              (aset db dk (+ (aget db dk) (float (* depi (aget ab i)))))))))
     (when trail?
       (diffuse-decay! n trail ttmp (double (:p-decay p))))
     phys))
