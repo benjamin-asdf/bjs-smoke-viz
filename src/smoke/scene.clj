@@ -110,16 +110,17 @@
                           :p-flow? true :p-flow 5.0 :p-flow-blend 0.4 :p-flow-paint 0.0
                           :p-count 2500 :p-sensor 9.0 :p-sense-angle 0.5 :p-turn 0.45
                           :p-speed 1.2 :p-deposit 0.28 :p-decay 0.90 :p-wind 0.0 :p-wander 0.2
-                          :buoy 0.3 :keep 0.96 :expos 0.95 :saturation 3.2 :wind 2.0
+                          :buoy 0.3 :keep 0.92 :expos 0.95 :saturation 3.2 :wind 2.0
                           :audio-puffs? true :audio-bands 10 :audio-dt-amp 0.09
                           :puff-radius 7.0 :puff-amount 2.6 :puff-vel 7.0 :puff-spawn-r 0.28
                           :puff-continuous? true :puff-spectral-scale 0.26 :puff-gain-gamma 0.5
                           :audio-wind-amp 2.0 :audio-wind-energy 0.6
-                          :voice? true :voice-amount 1.5 :voice-radius 0.3  ; near-single-cell point => filament smoke
+                          :voice? true :voice-amount 1.0 :voice-radius 0.3  ; near-single-cell point => filament smoke
                           :voice-color [1.0 0.85 0.4] :voice-random? true
                           :voice-agents? true :voice-agent-count 90 :voice-agent-life 70
                           :voice-ring 7.0 :voice-bloom 0.5
-                          :audio-sat 0.85 :audio-lift 0.1 :audio-palette-set nil}}})  ; random hues by default; pick a set in controls
+                          :audio-sat 0.85 :audio-lift 0.1 :audio-palette-set nil
+                          :audio-color-cycle 64}}})  ; random hues, flipped every 64 beats; pick a set in controls
 
 (defn theme-defaults
   "Per-theme parameter overrides (merged into params on theme switch); nil if none."
@@ -249,7 +250,9 @@
    :voice-shape-size 90  ; max half-size/radius (cells) the outline grows to before wrapping
    :voice-shape-min  3   ; starting half-size after each wrap
    :voice-shape-steps 5  ; number of discrete size steps from min..max before a fresh shape
-   :voice-shape-every 4  ; beats each growth step STAYS before the next step (=> stepped, beat-synced)
+   :voice-shape-every 4  ; beats each MIDDLE growth step stays before the next step
+   :voice-shape-edge-beats 16 ; beats the SMALLEST and LARGEST step each stay (longer dwell at the ends)
+   :voice-shape-rest-beats 32 ; beats with NO shape between cycles (quiet gap after each growth)
    :voice-rotate     0.0 ; shape rotation (rad/frame); 0 = no spin
    :voice-rect-aspect 1.7 ; how much :rect is wider than tall
    :voice-line-width 2   ; outline thickness (cells) of the shape
@@ -311,6 +314,10 @@
 (defonce recolor-pending? (atom false)) ; smoke.audio sets this on a colour-cycle beat; advance recolours the agents
 (defonce beat-count (atom 0))   ; running detected-beat counter mirrored from smoke.audio (drives shape growth)
 (defonce ^:private voice-cyc (atom {:gstep -1 :shape :circle :ang 0.0 :rot 0.0})) ; beat-stepped growing-shape state
+(def voice-bright-colors        ; bright voice-source colours flipped to on the colour-cycle beat
+  [[1.0 1.0 1.0] [1.0 0.85 0.4] [1.0 0.35 0.35] [0.35 1.0 0.45] [0.35 0.6 1.0]
+   [1.0 0.95 0.35] [1.0 0.45 1.0] [0.4 1.0 1.0] [1.0 0.6 0.2]])
+(defonce voice-color-cur (atom nil)) ; current random bright voice colour (smoke.audio flips it); nil => :voice-color
 (defonce audio-gains (atom nil)) ; per-band gains [g0 g1 ..] for :audio-white? mode (agents fade white->colour)
 (defonce audio-palette (atom nil)) ; generated vivid-hue palette set by smoke.audio ('r' re-rolls it); nil => theme palette
 (defonce audio-puffs (atom []))   ; pending beat-puff specs from smoke.audio; drained once per frame in `advance`
@@ -447,7 +454,7 @@
   [p]
   (reset! stars [])
   (reset! voice-agents []) (reset! voice-prev 0.0) (reset! recolor-pending? false)
-  (reset! voice-cyc {:gstep -1 :shape :circle :ang 0.0 :rot 0.0})
+  (reset! voice-cyc {:gstep -1 :shape :circle :ang 0.0 :rot 0.0}) (reset! voice-color-cur nil)
   (let [n   (grid-n p)
         ;; :p-rand-color? => a freshly generated random vivid palette (new set each
         ;; rebuild, i.e. each 'r'); else audio's hue palette / the theme's own.
@@ -566,7 +573,7 @@
         thr (double (:voice-thresh p 0.12))
         over (- v thr)
         n   (long (:n fl))
-        col (:voice-color p [1.0 0.85 0.4])
+        col (or @voice-color-cur (:voice-color p [1.0 0.85 0.4]))  ; random bright colour flips it
         cr (double (nth col 0)) cg (double (nth col 1)) cb (double (nth col 2))
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
         ci (quot n 2) cj (quot n 2)]
@@ -594,22 +601,34 @@
                       (aset dr k (float (+ (aget dr k) (* g cr))))
                       (aset dg k (float (+ (aget dg k) (* g cg))))
                       (aset db k (float (+ (aget db k) (* g cb))))))))))
-          ;; geometric SHAPE outline that grows in BEAT-SYNCED steps: it jumps one
-          ;; size step every :voice-shape-every beats and STAYS there those beats,
-          ;; through :voice-shape-steps steps min..max, then wraps to a fresh shape.
-          ;; On each wrap the dominant FREQ band picks the shape AND the rotation
-          ;; (bass third => spin one way, mid => none, treble => the other).
+          ;; geometric SHAPE outline, beat-synced: a cycle = GROW (steps × every
+          ;; beats, jumping one size step that STAYS every :voice-shape-every beats)
+          ;; then a REST of :voice-shape-rest-beats beats with NO shape, then a
+          ;; fresh shape. The dominant FREQ band picks the shape; rotation applies
+          ;; ONLY to triangles (bass third => spin one way, treble => the other).
           (let [cyc   @voice-cyc
                 every (long (max 1 (:voice-shape-every p 4)))
+                edge  (long (max 1 (:voice-shape-edge-beats p 16)))
                 steps (long (max 1 (:voice-shape-steps p 5)))
+                rest  (long (max 0 (:voice-shape-rest-beats p 16)))
+                ;; per-step dwell: edge beats for the smallest & largest, every for middle
+                step-dur (fn [s] (if (or (zero? s) (= s (dec steps))) edge every))
+                grow  (reduce + (map step-dur (range steps)))
+                cycle (max 1 (+ grow rest))
                 rmin  (double (:voice-shape-min p 3))
                 rmax  (double (:voice-shape-size p 90))
                 bc    (long @beat-count)
-                gstep (quot bc every)                 ; increments once every `every` beats
-                s     (mod gstep steps)               ; current step within the growth 0..steps-1
-                new-step? (not= gstep (long (:gstep cyc -1)))
-                wrap? (and new-step? (zero? s))       ; back to step 0 => fresh shape
-                ;; dominant-band fraction 0..1 (drives shape + rotation on a wrap)
+                bphase (mod bc cycle)                  ; beat within the grow+rest cycle
+                new-beat? (not= bc (long (:last-bc cyc -1)))
+                wrap? (and new-beat? (zero? bphase))   ; start of a cycle => fresh shape
+                ;; which step is bphase in (or rest)? walk the per-step durations
+                gs    (loop [acc 0 i 0]
+                        (if (>= i steps) [false (dec steps)]
+                            (let [d (long (step-dur i))]
+                              (if (< bphase (+ acc d)) [true i] (recur (+ acc d) (inc i))))))
+                growing? (nth gs 0)
+                s     (long (nth gs 1))
+                ;; dominant-band fraction 0..1 (drives shape + triangle rotation on a wrap)
                 ^doubles gains @audio-gains
                 frac (if (and gains (pos? (alength gains)))
                        (let [nn (alength gains)
@@ -625,17 +644,20 @@
                          (nth [:square :rect :triangle :circle] (min 3 (long (* frac 4.0))))
                          shape)
                        (:shape cyc))
+                ;; rotation ONLY for triangles; direction from the freq band
                 rot  (if fresh?
-                       (* (double (:voice-rotate p 0.0))
-                          (cond (< frac 0.34) -1.0 (> frac 0.66) 1.0 :else 0.0))
+                       (if (= shp :triangle)
+                         (* (double (:voice-rotate p 0.0)) (if (< frac 0.5) -1.0 1.0))
+                         0.0)
                        (double (:rot cyc 0.0)))
                 r    (+ rmin (* (- rmax rmin) (/ (double s) (double (max 1 (dec steps))))))
                 ang  (+ (double (:ang cyc 0.0)) rot)
                 lw   (double (:voice-line-width p 2))
                 amt  (double (:voice-amount p 1.0))
                 aspect (double (:voice-rect-aspect p 1.7))]
-            (reset! voice-cyc {:gstep gstep :shape shp :ang ang :rot rot})
-            (stamp-shape-outline! fl ci cj shp r aspect lw ang amt cr cg cb)))))
+            (reset! voice-cyc {:last-bc bc :shape shp :ang ang :rot rot})
+            (when growing?
+              (stamp-shape-outline! fl ci cj shp r aspect lw ang amt cr cg cb))))))
     ;; (2)+(3) rising-edge onset => expanding ring + short-lived agent burst
     (let [pv (double @voice-prev)]
       (when (and (> v thr) (<= pv thr))

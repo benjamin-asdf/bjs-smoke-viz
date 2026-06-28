@@ -379,7 +379,9 @@
                   (let [cyc (long (:audio-color-cycle p 0))]
                     (when (and (pos? cyc) (zero? (mod @beat-n cyc)))
                       (reroll-colors! (color-count p))
-                      (reset! scene/recolor-pending? true))))
+                      (reset! scene/recolor-pending? true)
+                      ;; flip the voice source to a fresh random bright colour too
+                      (reset! scene/voice-color-cur (rand-nth scene/voice-bright-colors)))))
             _   (when (< fv 0.12) (reset! armed false))
               ;; puffs: :puff-continuous? => EVERY band puffs each frame from its
               ;; current gain (no threshold, the spectrum itself makes the puffs);
@@ -463,6 +465,7 @@
   (reset! scene/audio-puffs [])
   (reset! scene/audio-wind nil)
   (reset! scene/audio-voice nil)
+  (reset! scene/voice-color-cur nil)
   (reroll-colors! (color-count p)))
 
 (defn band-count
@@ -483,6 +486,7 @@
   (reset! kick 0.0) (reset! beat-n 0) (reset! armed false) (reset! puff-armed false) (reset! scene/beat-count 0)
   (reset! scene/audio-puffs [])
   (reset! scene/audio-palette nil)  ; back to the theme's own palette
+  (reset! scene/voice-color-cur nil)
   (reset! scene/audio-keep nil)
   (reset! scene/audio-dt nil)
   (reset! scene/audio-emit nil)
@@ -602,20 +606,25 @@
   (a/play-with-sim!
    "/home/benj/repos/musicanalysis/aldebara3min.wav")
 
-  ;; ── how to start the PUFFS version (spectral puffs + slime flow + voice) ──
+;; ── how to start the PUFFS version (spectral puffs + slime flow + voice) ──
   (swap! smoke.core/params merge (smoke.scene/preset-params :puffs))
-  (a/play-with-sim! "/home/benj/repos/musicanalysis/aldebara.wav")     ; full song
-  (a/play-with-sim! "/home/benj/repos/musicanalysis/alicante.wav")     ; Boris Brejcha — Alicante
+  (a/play-with-sim! "/home/benj/repos/musicanalysis/aldebara.wav") ; full song
+  (a/play-with-sim! "/home/benj/repos/musicanalysis/alicante.wav") ; Boris Brejcha — Alicante
 
-  ;; ── voice centre modes (live-switch; needs vocals/onsets to fire) ──
+  (swap! smoke.core/params merge
+
+         {:keep 0.92
+          :voice-amount 1.0 :voice-random? false :voice-agents? true :voice-agent-count 130 :voice-ring 0.0 :voice-bloom 0.0})
+
+;; ── voice centre modes (live-switch; needs vocals/onsets to fire) ──
   (swap! smoke.core/params merge {:voice-amount 2.5 :voice-radius 0.3 :voice-random? false :voice-agents? false :voice-ring 0.0 :voice-bloom 0.0}) ; POINT
   (swap! smoke.core/params merge {:voice-amount 2.0 :voice-radius 0.6 :voice-random? true  :voice-agents? false :voice-ring 0.0 :voice-bloom 0.0}) ; SCATTER
-  (swap! smoke.core/params merge {:voice-amount 0.0 :voice-random? false :voice-agents? false :voice-ring 11.0 :voice-bloom 0.0})                   ; RING
+  (swap! smoke.core/params merge {:voice-amount 0.0 :voice-random? false :voice-agents? false :voice-ring 11.0 :voice-bloom 0.0}) ; RING
   (swap! smoke.core/params merge {:voice-amount 0.0 :voice-random? false :voice-agents? true :voice-agent-count 130 :voice-ring 0.0 :voice-bloom 0.0}) ; AGENTS
-  (swap! smoke.core/params merge {:voice-amount 0.0 :voice-random? false :voice-agents? false :voice-ring 0.0 :voice-bloom 1.0})                    ; BLOOM
-  (swap! smoke.core/params merge {:voice-amount 1.5 :voice-radius 0.3 :voice-random? true :voice-agents? true :voice-ring 7.0 :voice-bloom 0.5})    ; ALL
+  (swap! smoke.core/params merge {:voice-amount 0.0 :voice-random? false :voice-agents? false :voice-ring 0.0 :voice-bloom 1.0}) ; BLOOM
+  (swap! smoke.core/params merge {:voice-amount 1.5 :voice-radius 0.3 :voice-random? true :voice-agents? true :voice-ring 7.0 :voice-bloom 0.5}) ; ALL
 
   ;; audio palette: random by default; pick a curated set then re-roll
-  (swap! smoke.core/params assoc :audio-palette-set :sunset) (a/reseed-colors!)  ; :ice :ember :forest :ocean :sepia :pastel :candy :autumn / nil=random
+  (swap! smoke.core/params assoc :audio-palette-set :sunset) (a/reseed-colors!) ; :ice :ember :forest :ocean :sepia :pastel :candy :autumn / nil=random
 
   (a/stop!))
