@@ -1,0 +1,45 @@
+Ryki — "Such A Mess (Kyle Watson Bass Dub)" ft. Kyle Watson
+Audio-reactive generative visuals
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎵  MUSIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Track:   Such A Mess (Kyle Watson Bass Dub)
+Artists: Ryki feat. Kyle Watson
+Remix:   Kyle Watson (Bass Dub)
+Genre:   Bass House
+Release: 2015
+
+℗ 2015 the respective artists & label. I don't own the music, it's used
+here to credit and support the release. Please follow and buy:
+
+• Beatport:       https://www.beatport.com/track/such-a-mess-kyle-watson-bass-dub/7178564
+• Discogs:        https://www.discogs.com/master/1420567-Ryki-Featuring-Kyle-Watson-Such-A-Mess
+• Kyle Watson:    https://soundcloud.com/kylewatson_sa
+• Ryki:           https://music.apple.com/us/artist/ryki/1042009927
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌫️  VISUALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Real-time generative smoke, painted by the music. Nothing is pre-rendered —
+every frame is simulated live.
+
+Under the hood:
+ • A spectral fluid solver (Jos Stam's "Stable Fluids", FFT formulation)
+   carries the smoke.
+ • Thousands of Physarum (slime-mould) agents paint into it, growing the
+   flowing, vein-like structures.
+ • The track is analysed live and mapped onto the image:
+     – each frequency band drives a colour — silence stays white, energy
+       fades the palette in (bass / mid / treble → their own hues)
+     – beat onsets kick the simulation's time-step, so the smoke lurches
+       forward on every hit, then eases back
+     – overall loudness feeds emission and per-colour persistence, so loud
+       passages bloom denser and brighter
+
+Built in Clojure + Quil (OpenGL).
+Code / source:  https://github.com/benjamin-asdf/bjs-smoke-viz
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#BassHouse #KyleWatson #GenerativeArt #Visualizer #AudioReactive
+#FluidSimulation #SlimeMould #Physarum #Clojure #LiveVisuals

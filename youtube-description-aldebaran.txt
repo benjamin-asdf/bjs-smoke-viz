@@ -1,0 +1,48 @@
+Hraach & Armen Miran — Aldebaran | generative smoke (audio-reactive)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎵  MUSIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Track:   Aldebaran (Original Mix)
+Artists: Hraach & Armen Miran
+Label:   Sol Selectas
+Genre:   Organic / Melodic House
+Length:  ~6:56
+
+I don't own the music — it's used here to credit and support the release.
+Please follow and buy the original:
+
+• YouTube:     https://www.youtube.com/watch?v=0JycF8jZZpQ
+• Beatport:    https://www.beatport.com/track/aldebaran-original/8326224
+• Armen Miran: https://soundcloud.com/armenmiran
+• Hraach:      https://soundcloud.com/hraachofficial
+• Sol Selectas: https://soundcloud.com/sol-selectas
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌫️  VISUALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Generative smoke, painted entirely by the music — nothing is filmed or
+pre-drawn, every frame is simulated.
+
+Under the hood:
+ • A spectral fluid solver (Jos Stam's "Stable Fluids", FFT formulation)
+   carries the smoke on a periodic grid.
+ • The spectrum is mapped to a radial clock: each frequency band continuously
+   puffs coloured smoke from its own angle around the circle — bass and treble
+   sit on opposite arcs — so the whole image is the live spectrum, blooming
+   outward. Quiet tones are lifted so soft passages still breathe smoke.
+ • Thousands of Physarum (slime-mould) agents grow a flowing colour network
+   AND stir the fluid along their own traces, so the smoke streams down the
+   veins they carve.
+ • The voice/vocal energy lights a bright source in the centre.
+ • Beat onsets gust the wind and kick the simulation's time-step, so the smoke
+   lurches and swirls on the hits.
+ • The last 30 seconds play with the audio cut — the smoke keeps flowing and
+   slowly settles on its own, with no reaction. (My favourite part.)
+
+Built in Clojure + Quil (OpenGL), rendered offline at 1080p.
+Code / source:  https://github.com/benjamin-asdf/bjs-smoke-viz
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#OrganicHouse #MelodicTechno #GenerativeArt #Visualizer #AudioReactive
+#FluidSimulation #SlimeMould #Physarum #Clojure #LiveVisuals

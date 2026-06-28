@@ -154,6 +154,20 @@
   (chooser-row parent "palette (agents)" scene/palettes
                (fn [colours] (swap! core/params assoc :palette colours))))
 
+(defn- audio-palette-row
+  "Dropdown for the AUDIO look (puffs + slime) colour set: 'random' => freshly
+   generated vivid hues (the default, kept on every reset), or a curated set from
+   scene/audio-palettes. Re-rolls the palette immediately on select."
+  [^JPanel parent]
+  (chooser-row parent "audio palette (puffs)"
+               (into [[:random nil]] (mapv (fn [k] [k k]) (sort (keys scene/audio-palettes))))
+               (fn [set-kw]
+                 (swap! core/params assoc :audio-palette-set set-kw)
+                 ;; re-roll now so the choice shows (palette is baked at reroll time)
+                 (when-let [f (try (requiring-resolve 'smoke.audio/reseed-colors!)
+                                   (catch Throwable _))]
+                   (f)))))
+
 (defn- ->awt ^Color [[r g b]]
   (Color. (float (min 1.0 (double r))) (float (min 1.0 (double g))) (float (min 1.0 (double b)))))
 (defn- ->rgb [^Color c]
@@ -266,7 +280,13 @@
                             (reset! core/reset? true))))  ; re-seed so agents take new colours
     (.addActionListener reset
                         (reify ActionListener
-                          (actionPerformed [_ _] (reset! core/reset? true))))
+                          (actionPerformed [_ _]
+                            ;; reseed random colours too (like 'r', minus the seek),
+                            ;; so a field reset gives fresh hues in audio mode
+                            (when-let [f (try (requiring-resolve 'smoke.audio/reseed-colors!)
+                                              (catch Throwable _))]
+                              (f))
+                            (reset! core/reset? true))))
     (.addActionListener pause
                         (reify ActionListener
                           (actionPerformed [_ _] (reset! core/pause-flip? true))))
@@ -290,6 +310,7 @@
   (preset-row panel)
   (theme-row panel)
   (palette-row panel)
+  (audio-palette-row panel)
   (jet-row panel)
   (jet-count-row panel)
   (buttons-row panel)

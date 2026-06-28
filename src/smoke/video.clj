@@ -45,8 +45,12 @@
            (aset out (+ o 2)    (unchecked-byte (bit-and v 0xFF)))))))))
 
 (defn- ffmpeg-cmd
-  "Argv for ffmpeg reading raw rgb24 frames from stdin, optionally muxing `audio`."
-  [out-path w h fps audio crf start-secs]
+  "Argv for ffmpeg reading raw rgb24 frames from stdin, optionally muxing `audio`.
+   When `tail?` (a silent visual tail past the audio), DON'T pass -shortest, so the
+   longer video stream sets the duration and the last seconds are simply silent.
+   When `pad` = [W H], centre the rendered frame on a black W×H canvas WITHOUT
+   scaling (letter/pillar-box), so a square render keeps its shape at 16:9."
+  [out-path w h fps audio crf start-secs tail? pad]
   (-> ["ffmpeg" "-y" "-hide_banner" "-loglevel" "warning"
        ;; video from stdin (raw frames)
        "-f" "rawvideo" "-pixel_format" "rgb24"
@@ -54,8 +58,12 @@
       ;; audio input, optionally seeked so it lines up with :start-secs
       (cond-> (and audio (pos? (double start-secs))) (into ["-ss" (str start-secs)]))
       (cond-> audio (into ["-i" audio]))
+      ;; pad onto black at NATIVE size (no scale): centre the WxH input in the target
+      (cond-> pad (into ["-vf" (format "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black"
+                                       (long (first pad)) (long (second pad)))]))
       (into ["-c:v" "libx264" "-pix_fmt" "yuv420p" "-preset" "medium" "-crf" (str crf)])
-      (cond-> audio (into ["-c:a" "aac" "-b:a" "192k" "-shortest"]))
+      (cond-> audio (into ["-c:a" "aac" "-b:a" "192k"]))
+      (cond-> (and audio (not tail?)) (into ["-shortest"]))
       (conj out-path)))
 
 (defn render!
@@ -71,9 +79,16 @@
      :params   extra param override map (applied last; wins over preset/render/grid).
      :crf      libx264 quality, lower = better/bigger (default 18).
      :warmup   sim steps to run before recording, so frame 0 isn't empty (default 90).
+     :tail-secs  extra seconds rendered AFTER the audio with modulation OFF — the
+                 visuals keep running but stop reacting (audio atoms cleared), so you
+                 see the look settle 'without audio'. The video runs that much longer
+                 than the (silent-tailed) audio. Default 0.
+     :pad      [W H] — centre the rendered frame on a black W×H canvas at NATIVE
+                 size (no scaling). Use with a square :render to put it on a 16:9
+                 YouTube frame with black side-bars instead of cropping/stretching.
    Returns {:out path :frames n :render [w h] :fps fps :seconds dur}."
-  [out-path & {:keys [audio fps seconds start-secs render grid preset params crf warmup]
-               :or   {fps 60 crf 18 warmup 90 start-secs 0}}]
+  [out-path & {:keys [audio fps seconds start-secs render grid preset params crf warmup tail-secs pad]
+               :or   {fps 60 crf 18 warmup 90 start-secs 0 tail-secs 0}}]
   (let [fps (long fps) start (double start-secs)
         p   (cond-> scene/default-params
               preset (merge (or (scene/preset-params preset)
@@ -84,8 +99,10 @@
         analysis (when audio (audio/analyze audio :bands (audio/band-count p) :fps fps))
         dur (double (or seconds (when analysis (- (:dur-secs analysis) start)) 10))
         nframes (long (Math/round (* (double fps) dur)))
+        tail-frames (long (Math/round (* (double fps) (double tail-secs))))
+        total   (+ nframes tail-frames)
         w (scene/render-w p) h (scene/render-h p)
-        ff (ffmpeg-cmd out-path w h fps audio crf start)
+        ff (ffmpeg-cmd out-path w h fps audio crf start (pos? tail-frames) pad)
         log (File/createTempFile "smoke-ffmpeg" ".log")
         proc (.start (doto (ProcessBuilder. ^java.util.List ff)
                        (.redirectOutput ProcessBuilder$Redirect/DISCARD)
@@ -94,9 +111,9 @@
         px  (int-array (* w h))
         buf (byte-array (* 3 w h))
         t0  (System/nanoTime)]
-    (println (format "rendering %d frames @ %dx%d %dfps (grid %d) -> %s"
-                     nframes w h fps (scene/grid-n p) out-path))
-    (when analysis (audio/offline-init! analysis))
+    (println (format "rendering %d frames (%d song + %d silent tail) @ %dx%d %dfps (grid %d) -> %s"
+                     total nframes tail-frames w h fps (scene/grid-n p) out-path))
+    (when analysis (audio/offline-init! analysis p))
     (try
       (loop [fl (scene/new-fluid p) i (- (long warmup))]
         (cond
@@ -104,19 +121,27 @@
           (neg? i)
           (recur (scene/advance (doto fl (scene/seed-sources! p)) p) (inc i))
 
-          (>= i nframes) nil
+          (>= i total) nil
 
           :else
           (do
-            (when analysis (audio/modulate! analysis (+ start (/ (double i) fps)) p))
+            ;; song portion: drive modulation. At the tail boundary, clear all audio
+            ;; atoms ONCE so the tail runs with NO reactivity (the 'without audio' look).
+            (cond
+              (< i nframes) (when analysis (audio/modulate! analysis (+ start (/ (double i) fps)) p))
+              (= i nframes) (do (reset! scene/audio-keep nil) (reset! scene/audio-dt nil)
+                                (reset! scene/audio-emit nil) (reset! scene/audio-gains nil)
+                                (reset! scene/audio-wind nil) (reset! scene/audio-voice nil)
+                                (reset! scene/audio-puffs [])))
             (scene/seed-sources! fl p)
             (let [fl (scene/advance fl p)]
               (scene/render-pixels! fl p px)
               (pack-rgb24! px buf w h)
               (.write os buf)
               (when (zero? (rem i 60))
-                (println (format "  frame %d/%d (%.1fs)  %.1f fps render"
-                                 i nframes (/ (double i) fps)
+                (println (format "  frame %d/%d (%.1fs)%s  %.1f fps render"
+                                 i total (/ (double i) fps)
+                                 (if (>= i nframes) " [tail]" "")
                                  (if (pos? i) (/ (double i) (/ (- (System/nanoTime) t0) 1.0e9)) 0.0))))
               (recur fl (inc i))))))
       (finally
@@ -130,7 +155,8 @@
       (when-not (zero? code)
         (println "ffmpeg FAILED, log:" (.getPath log))
         (println (slurp log))))
-    {:out out-path :frames nframes :render [w h] :fps fps :seconds dur
+    {:out out-path :frames total :song-frames nframes :tail-frames tail-frames
+     :render [w h] :fps fps :seconds (/ (double total) fps)
      :exit (.exitValue proc) :ffmpeg-log (.getPath log)}))
 
 (comment

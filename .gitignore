@@ -6,3 +6,6 @@
 .DS_Store
 
 /.clj-kondo/.cache/
+
+# rendered videos (too large for git)
+*.mp4

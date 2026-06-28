@@ -25,28 +25,49 @@
      (/ (bit-and (bit-shift-right rgb 8) 0xff) 255.0)
      (/ (bit-and rgb 0xff) 255.0)]))
 
+(defn vivid-palette*
+  "`n` vivid hues drawn from RNG `rng`: a random BASE hue plus a random ARC SPAN
+   across the wheel (+ small per-hue jitter). Because the span varies, each call
+   has a visibly different CHARACTER — sometimes analogous/warm/cool, sometimes
+   near-rainbow — instead of always landing on a (merely rotated) full wheel, which
+   looked identical every reseed. Agents share these `n` colours so each forms its
+   own coherent network (no speckle)."
+  [^java.util.Random rng ^long n]
+  (let [nn   (max 1 n)
+        h0   (.nextDouble rng)
+        span (+ 0.22 (* 0.66 (.nextDouble rng)))   ; arc covered: 0.22..0.88 of the wheel
+        jit  0.05]
+    (mapv (fn [i]
+            (let [t (if (> nn 1) (/ (double i) (double (dec nn))) 0.0)
+                  h (mod (+ h0 (* span t) (* jit (- (.nextDouble rng) 0.5))) 1.0)]
+              (hsv->rgb h 1.0 1.0)))
+          (range nn))))
+
+(defn rand-vivid-palette
+  "A fresh random vivid palette each call (see `vivid-palette*`). Used by the
+   `:p-rand-color?` look."
+  [^long n]
+  (vivid-palette* (java.util.Random.) n))
+
 (defn make
   "Allocate `cnt` agents (random pos/heading), coloured from `palette`, plus a
-   trail map (used only in :trail mode). When `rand-color?`, every agent gets its
-   own random vivid hue instead of a palette colour (band indices still cycle the
-   palette, so audio grouping is unaffected)."
-  ([^long n ^long cnt palette] (make n cnt palette false))
-  ([^long n ^long cnt palette rand-color?]
-   (let [xs (float-array cnt) ys (float-array cnt) hs (float-array cnt)
-         ar (float-array cnt) ag (float-array cnt) ab (float-array cnt)
-         band (int-array cnt)                 ; palette/freq-band index, for :audio-white? mode
-         pal (vec palette) pc (count pal)]
-     (dotimes [i cnt]
-       (aset xs i (float (* (double (rand)) n)))
-       (aset ys i (float (* (double (rand)) n)))
-       (aset hs i (float (* (double (rand)) PI2)))
-       (aset band i (int (mod i pc)))
-       (let [c (if rand-color? (hsv->rgb (rand) 1.0 1.0) (nth pal (mod i pc)))]
-         (aset ar i (float (nth c 0)))
-         (aset ag i (float (nth c 1)))
-         (aset ab i (float (nth c 2)))))
-     {:n n :count cnt :xs xs :ys ys :hs hs :ar ar :ag ag :ab ab :band band
-      :trail (float-array (* n n)) :ttmp (float-array (* n n))})))
+   trail map (used only in :trail mode)."
+  [^long n ^long cnt palette]
+  (let [xs (float-array cnt) ys (float-array cnt) hs (float-array cnt)
+        ar (float-array cnt) ag (float-array cnt) ab (float-array cnt)
+        band (int-array cnt)                 ; palette/freq-band index, for :audio-white? mode
+        pal (vec palette) pc (count pal)]
+    (dotimes [i cnt]
+      (aset xs i (float (* (double (rand)) n)))
+      (aset ys i (float (* (double (rand)) n)))
+      (aset hs i (float (* (double (rand)) PI2)))
+      (aset band i (int (mod i pc)))
+      (let [c (nth pal (mod i pc))]
+        (aset ar i (float (nth c 0)))
+        (aset ag i (float (nth c 1)))
+        (aset ab i (float (nth c 2)))))
+    {:n n :count cnt :xs xs :ys ys :hs hs :ar ar :ag ag :ab ab :band band
+     :trail (float-array (* n n)) :ttmp (float-array (* n n))}))
 
 (defn recolor!
   "Re-paint every agent from `palette` by its band index (mutates the colour
@@ -90,7 +111,9 @@
 
 (defn step!
   "Advance agents one tick. Mode (:p-mode p) selects what they sense + deposit:
-   :trail => classic white network; otherwise => colour into the smoke."
+   :trail => classic white network; :flow => INVISIBLE network that injects its
+   motion into the fluid velocity (smoke flows along the traces, agents undrawn);
+   otherwise => colour into the smoke."
   [phys fl p]
   (let [n (long (:n phys)) cnt (long (:count phys))
         ^floats xs (:xs phys) ^floats ys (:ys phys) ^floats hs (:hs phys)
@@ -100,6 +123,13 @@
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
         ^floats trail (:trail phys) ^floats ttmp (:ttmp phys)
         trail? (= (:p-mode p) :trail)
+        ;; :flow => SLIME agents (sense + deposit their own COLOUR, like :smoke, so
+        ;; they form coloured networks and don't blob) that ALSO stir the fluid
+        ;; along their heading, so the smoke flows down their coloured traces.
+        flow?  (= (:p-mode p) :flow)
+        flowk  (double (:p-flow p 6.0))            ; TARGET flow speed agents drive the fluid to (:flow)
+        flowa  (double (:p-flow-blend p 0.4))      ; blend rate toward that target (BOUNDS u/v => stable)
+        paintw (double (:p-flow-paint p 0.0))      ; :flow agents ALSO paint extra WHITE this much (0 => off)
         ;; :audio-white? => deposit WHITE, fading in each agent's palette colour
         ;; by its freq band's gain (silent band => white, loud band => full colour)
         ^doubles gains (:audio-gains p)
@@ -144,6 +174,20 @@
         (aset ys i (float ny))
         (aset hs i (float h2))
         (cond
+          flow?
+          ;; SLIME: deposit the agent's own COLOUR (=> coloured networks, no blob)
+          ;; AND push the fluid along its heading so the smoke flows down the trace.
+          (do (aset dr dk (+ (aget dr dk) (float (* dep (aget ar i)))))
+              (aset dg dk (+ (aget dg dk) (float (* dep (aget ag i)))))
+              (aset db dk (+ (aget db dk) (float (* dep (aget ab i)))))
+              ;; BLEND u/v toward the agent's heading-flow (bounded => no blow-up):
+              ;; u += a·(target − u). |u| stays ≈ flowk regardless of agent count.
+              (aset u dk (float (+ (aget u dk) (* flowa (- (* flowk (Math/cos h2)) (aget u dk))))))
+              (aset v dk (float (+ (aget v dk) (* flowa (- (* flowk (Math/sin h2)) (aget v dk))))))
+              (when (pos? paintw)                         ; optional extra white on top
+                (aset dr dk (+ (aget dr dk) (float paintw)))
+                (aset dg dk (+ (aget dg dk) (float paintw)))
+                (aset db dk (+ (aget db dk) (float paintw)))))
           trail?
           (aset trail dk (+ (aget trail dk) (float dep)))
           agents?

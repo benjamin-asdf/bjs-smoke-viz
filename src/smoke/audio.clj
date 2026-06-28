@@ -161,23 +161,12 @@
   (let [idx (long (/ (double secs) (double hop-secs)))]
     (when (< idx (count hops)) (nth hops idx))))
 
-(defn- hsv->rgb
-  "[r g b] in 0..1 from hue/sat/val in 0..1."
-  [h s v]
-  (let [rgb (java.awt.Color/HSBtoRGB (float h) (float s) (float v))]
-    [(/ (bit-and (bit-shift-right rgb 16) 0xff) 255.0)
-     (/ (bit-and (bit-shift-right rgb 8) 0xff) 255.0)
-     (/ (bit-and rgb 0xff) 255.0)]))
-
 (defn- vivid-palette
-  "`n` vivid colours evenly spaced around the hue wheel, starting from a
-   seed-random base hue — so every seed gives a distinct but harmonious set."
+  "Seeded random vivid palette — random base hue + random arc span (+ jitter) from
+   `seed`, so each seed gives a visibly DIFFERENT-looking set, not just a rotated
+   full wheel. Shares the logic with the live `:p-rand-color?` path."
   [^long seed ^long n]
-  (let [rng (java.util.Random. seed)
-        h0  (.nextDouble rng)
-        nn  (max 1 n)]
-    (mapv (fn [i] (hsv->rgb (mod (+ h0 (/ (double i) nn)) 1.0) 1.0 1.0))
-          (range nn))))
+  (phys/vivid-palette* (java.util.Random. seed) n))
 
 (defn- flux-at
   "Onset/beat strength (0..1) at playback time `secs`, or 0 past the end."
@@ -194,26 +183,53 @@
 (defonce ^:private kick   (atom 0.0)) ; decaying beat-kick envelope (0..1)
 (defonce ^:private beat-n (atom 0))   ; count of detected beats (for every-Nth accent)
 (defonce ^:private armed  (atom false)) ; true while inside a beat (debounces the onset trigger)
+(defonce ^:private puff-armed (atom false)) ; same debounce for the (lower) puff onset trigger
 (defonce ^:private color-seed (atom 0)) ; RNG seed behind the current colour shuffle (re-rolled on 'r')
 
 (defn- base-palette [p]
   (or (:palette p) (:palette (scene/theme p)) [[1.0 1.0 1.0]]))
 
+(defn- color-count
+  "How many random agent hues to roll — decoupled from the audio band count so
+   the palette can be richer (more colour variety) than the few keep-modulation
+   bands. From `:audio-colors` (default 7)."
+  ^long [p] (max 1 (long (:audio-colors p 7))))
+
+(defn- tone-palette
+  "Tone a palette's MOOD so it isn't only full-neon: `sat` scales chroma toward
+   the per-colour grey mean (1 = full, lower = muted), then `lift` blends toward
+   WHITE (0 = none, higher = pastel/washed). Keeps the hues, changes the feel."
+  [pal ^double sat ^double lift]
+  (mapv (fn [c]
+          (let [m (/ (double (reduce + c)) 3.0)]
+            (mapv (fn [ch]
+                    (let [s (+ m (* sat (- (double ch) m)))]
+                      (-> (+ s (* lift (- 1.0 s))) (max 0.0) (min 1.0))))
+                  c)))
+        pal))
+
 (defn- reroll-colors!
   "Pick a fresh random seed and publish a new set of `nb` vivid hues into
-   scene/audio-palette, so the next agents built from it (every 'r', and offline
-   renders) wear a freshly generated, evenly-spaced colour set."
+   scene/audio-palette, toned by the live :audio-sat / :audio-lift mood (so it's
+   not only neon), so the next agents built from it (every 'r', and offline
+   renders) wear a freshly generated colour set."
   [^long nb]
-  (let [seed (.nextLong (java.util.Random.))]
+  (let [seed (.nextLong (java.util.Random.))
+        p    @core/params
+        sat  (double (:audio-sat p 1.0)) lift (double (:audio-lift p 0.0))
+        ;; curated colour set if chosen, else freshly generated random vivid hues
+        base (or (get scene/audio-palettes (:audio-palette-set p))
+                 (vivid-palette seed nb))]
     (reset! color-seed seed)
-    (reset! scene/audio-palette (vivid-palette seed nb))
+    (reset! scene/audio-palette (tone-palette base sat lift))
     seed))
 
 (defn- recolor-live!
   "Repaint the agents in the running sketch from the current hue palette, so the
    new colours show immediately (start!/restart-track! don't rebuild the agents)."
   []
-  (when-not (:p-rand-color? @core/params)   ; rand-color agents keep their own random hues
+  (when-not (or (:p-rand-color? @core/params)   ; rand-color agents keep their own random hues
+                (:audio-puffs? @core/params))    ; :puffs agents stay white (colour lives in the puffs)
     (when-let [ph (:phys @core/last-state)]
       (when-let [pal @scene/audio-palette]
         (phys/recolor! ph pal)))))
@@ -249,6 +265,97 @@
     true
     (catch Throwable _ false)))
 
+(defn- voice-score
+  "Heuristic 'vocal presence' (0..1) from band `gains`: energy concentrated in the
+   mid/formant region (~250 Hz–3 kHz) RELATIVE to the bass + treble around it. NOT
+   true vocal isolation — a midrange-dominance detector — but it tracks sung/spoken
+   passages well enough to drive a centre glow. The vocal band is :voice-band-lo ..
+   :voice-band-hi as FRACTIONS of the spectrum; :voice-contrast is how strongly the
+   surrounding bass/treble suppress the score (higher => more selective)."
+  ^double [^doubles gains p]
+  (let [n   (alength gains)
+        lo  (max 0 (long (* (double (:voice-band-lo p 0.2)) n)))
+        hi  (min n (long (max (inc lo) (long (* (double (:voice-band-hi p 0.65)) n)))))
+        meanr (fn ^double [^long a ^long b]
+                (if (< a b)
+                  (loop [i a s 0.0] (if (< i b) (recur (inc i) (+ s (aget gains i))) (/ s (double (- b a)))))
+                  0.0))
+        mid   (meanr lo hi)
+        below (meanr 0 lo)
+        above (meanr hi n)
+        c     (double (:voice-contrast p 0.6))]
+    (-> (- mid (* c 0.5 (+ below above))) (max 0.0) (min 1.0))))
+
+(defn- push-puff!
+  "Compute one beat puff from the spectrum and queue it into scene/audio-puffs.
+   DETERMINISTIC from `gains`:
+     angle  = spectral centroid (gain-weighted mean band) mapped around a full
+              circle => bass-heavy onsets fire one way, bright/trebly onsets
+              another (a 'radial clock'); the puff shoots outward along it.
+     colour = the dominant (loudest) band's hue from `pal`.
+     size / amount / speed scale with onset strength `fv` (0..1).
+   `pal` is the active vivid-hue palette (one colour per band)."
+  [^doubles gains pal ^double fv p]
+  (let [n   (alength gains)
+        sum (areduce gains i s 0.0 (+ s (aget gains i)))
+        cen (if (pos? sum)
+              (/ (areduce gains i s 0.0 (+ s (* (double i) (aget gains i)))) sum)
+              (* 0.5 n))                                   ; silence => straight up
+        dom (loop [i 1 bi 0 bv (aget gains 0)]             ; argmax band => colour
+              (if (< i n)
+                (if (> (aget gains i) bv) (recur (inc i) i (aget gains i)) (recur (inc i) bi bv))
+                bi))
+        ;; map the dominant band onto the palette by FRACTION, so the palette size
+        ;; (agent hue count) and the band count can differ freely
+        palv (vec pal)
+        pc   (count palv)
+        col  (if (pos? pc)
+               (nth palv (min (dec pc) (long (* (/ (double dom) (double (max 1 n))) pc))))
+               [1.0 1.0 1.0])
+        ang  (+ (double (:puff-angle p 0.0))
+                (* scene/TAU (/ cen (double (max 1 n)))))
+        dx   (Math/cos ang) dy (Math/sin ang)
+        sr   (double (:puff-spawn-r p 0.05))
+        st   (min 1.0 (max 0.0 fv))
+        rad  (* (double (:puff-radius p 7.0)) (+ 0.55 (* 0.45 st)))
+        amt  (* (double (:puff-amount p 2.6)) (+ 0.40 (* 0.60 st)))
+        vel  (* (double (:puff-vel p 7.0))    (+ 0.40 (* 0.60 st)))]
+    (swap! scene/audio-puffs conj
+           {:x (+ 0.5 (* sr dx)) :y (+ 0.5 (* sr dy))
+            :color col :r rad :amount amt
+            :vx (* vel dx) :vy (* vel dy)})))
+
+(defn- push-spectral-puffs!
+  "Continuous spectral emission (NO threshold / no onset): EVERY frequency band
+   emits a puff each call, sized + sped by its CURRENT gain. Each band sits at its
+   own fixed clock angle, so the spectrum fans out as a ring of coloured puffs —
+   the louder a band, the more it puffs and the further it shoots. Runs every
+   frame, so `:puff-spectral-scale` throttles the per-frame deposit."
+  [^doubles gains pal p]
+  (let [n    (alength gains)
+        palv (vec pal) pc (count palv)
+        off  (double (:puff-angle p 0.0))
+        sr   (double (:puff-spawn-r p 0.28))
+        brad (double (:puff-radius p 7.0))
+        bamt (* (double (:puff-amount p 2.6)) (double (:puff-spectral-scale p 0.15)))
+        bvel (double (:puff-vel p 7.0))
+        ;; 1:1 freq -> smoke, but lift the QUIET end so soft tones still show:
+        ;; ge = g^gamma (gamma<1 boosts low gains; 1.0 = pure linear)
+        gam  (double (:puff-gain-gamma p 1.0))]
+    (dotimes [b n]
+      (let [g (aget gains b)]
+        (when (> g 0.003)                     ; skip ~silent bands (perf; no real threshold)
+          (let [ge  (if (== gam 1.0) g (Math/pow g gam))
+                ang (+ off (* scene/TAU (/ (+ (double b) 0.5) (double (max 1 n)))))
+                dx  (Math/cos ang) dy (Math/sin ang)
+                col (if (pos? pc)
+                      (nth palv (min (dec pc) (long (* (/ (double b) (double (max 1 n))) pc))))
+                      [1.0 1.0 1.0])]
+            (swap! scene/audio-puffs conj
+                   {:x (+ 0.5 (* sr dx)) :y (+ 0.5 (* sr dy))
+                    :color col :r (* brad (+ 0.5 (* 0.5 ge))) :amount (* bamt ge)
+                    :vx (* bvel ge dx) :vy (* bvel ge dy)})))))))
+
 (defn modulate!
   "Apply one frame of audio modulation for playback time `secs`: set the scene's
    per-colour keep / dt / emit / gains atoms from the analysis at that time. Pure
@@ -265,8 +372,26 @@
             g   0.15
             fv  (max 0.0 (/ (- (flux-at analysis secs) g) (- 1.0 g)))
               ;; count beats (rising-edge trigger, debounced); accent every Nth one
-            _   (when (and (not @armed) (> fv 0.30)) (reset! armed true) (swap! beat-n inc))
+            _   (when (and (not @armed) (> fv 0.30))
+                  (reset! armed true) (swap! beat-n inc) (swap! scene/beat-count inc)
+                  ;; colour-cycle: every Nth beat roll a fresh palette (puffs read it
+                  ;; live; advance repaints the agents via scene/recolor-pending?)
+                  (let [cyc (long (:audio-color-cycle p 0))]
+                    (when (and (pos? cyc) (zero? (mod @beat-n cyc)))
+                      (reroll-colors! (color-count p))
+                      (reset! scene/recolor-pending? true))))
             _   (when (< fv 0.12) (reset! armed false))
+              ;; puffs: :puff-continuous? => EVERY band puffs each frame from its
+              ;; current gain (no threshold, the spectrum itself makes the puffs);
+              ;; else a single onset-triggered puff with its own (lower) threshold
+            pt  (double (:puff-thresh p 0.18))
+            _   (when (:audio-puffs? p)
+                  (if (:puff-continuous? p)
+                    (push-spectral-puffs! gains pal p)
+                    (cond
+                      (and (not @puff-armed) (> fv pt))
+                      (do (reset! puff-armed true) (push-puff! gains pal fv p))
+                      (< fv (* 0.6 pt)) (reset! puff-armed false))))
               ;; every beat kicks at the base level; every Nth gets the stronger accent
             acc (if (zero? (mod @beat-n (long (:audio-beat-every p 4))))
                   (double (:audio-beat-accent p 3.0))
@@ -285,6 +410,12 @@
             emit (* (double (:audio-emit-amp p)) (+ ef (* (- 1.0 ef) energy)))]
         (reset! kick k)
         (cond
+            ;; puffs mode: all reactivity is in the beat puffs (queued above); the
+            ;; agents stay a faint static white haze => no keep/emit modulation
+          (:audio-puffs? p)
+          (do (reset! scene/audio-keep nil)
+              (reset! scene/audio-gains gains)   ; expose gains so emit-voice! can pick a shape by freq
+              (reset! scene/audio-emit nil))
             ;; agents mode: gains drive per-colour-group deposit in physarum; keep scalar,
             ;; NO global emit boost (the per-group bloom replaces it) => clean, not muddy
           (:audio-agents? p)
@@ -301,11 +432,18 @@
           (do (reset! scene/audio-keep (channel-keep gains pal (:keep p) (:audio-amp p) (:audio-floor p)))
               (reset! scene/audio-gains nil)
               (reset! scene/audio-emit emit)))
-        (reset! scene/audio-dt (* (double (:audio-dt-amp p)) k)))
+        (reset! scene/audio-dt (* (double (:audio-dt-amp p)) k))
+          ;; wind surges with the beat (kick) and stays up while loud (energy)
+        (reset! scene/audio-wind (+ (* (double (:audio-wind-amp p 0.0)) k)
+                                    (* (double (:audio-wind-energy p 0.0)) energy)))
+          ;; heuristic vocal presence => white centre glow (scene/emit-voice!)
+        (reset! scene/audio-voice (when (:voice? p) (voice-score gains p))))
       (do (reset! scene/audio-keep nil)
           (reset! scene/audio-gains nil)
           (reset! scene/audio-dt nil)
           (reset! scene/audio-emit nil)
+          (reset! scene/audio-wind nil)
+          (reset! scene/audio-voice nil)
           (reset! kick 0.0)))))
 
 (defn- tick! []
@@ -316,17 +454,24 @@
 ;; Used by smoke.video to drive the same audio reactivity from a frame counter
 ;; instead of the wall clock, so a rendered file is perfectly in sync.
 (defn offline-init!
-  "Reset the beat/kick state and roll a fresh band->colour permutation for an
-   offline render of `analysis`. Clears the live audio-hook so nothing competes."
-  [analysis]
+  "Reset the beat/kick state and roll a fresh agent palette for an offline render
+   of `analysis` (colour count from `p`'s :audio-colors). Clears the live
+   audio-hook so nothing competes."
+  [analysis p]
   (reset! scene/audio-hook nil)
-  (reset! kick 0.0) (reset! beat-n 0) (reset! armed false)
-  (reroll-colors! (long (:bands analysis))))
+  (reset! kick 0.0) (reset! beat-n 0) (reset! armed false) (reset! puff-armed false) (reset! scene/beat-count 0)
+  (reset! scene/audio-puffs [])
+  (reset! scene/audio-wind nil)
+  (reset! scene/audio-voice nil)
+  (reroll-colors! (color-count p)))
 
 (defn band-count
-  "Number of frequency bands for `p` = its active palette's colour count."
+  "Number of FFT frequency bands for `p`. Defaults to the active palette's colour
+   count (each band drives its colour's keep), but `:audio-bands` overrides it —
+   the :puffs theme needs fine spectral resolution (centroid/dominant band) even
+   though its agents are a single white colour."
   [p]
-  (max 1 (count (or (:palette p) (:palette (scene/theme p)) [1]))))
+  (max 1 (long (:audio-bands p (count (or (:palette p) (:palette (scene/theme p)) [1]))))))
 
 (defn stop!
   "Stop playback and hand the smoke back to its scalar :keep."
@@ -335,11 +480,14 @@
   (when-let [{:keys [^Process proc]} @state]
     (try (.destroy proc) (catch Throwable _)))
   (reset! state nil)
-  (reset! kick 0.0) (reset! beat-n 0) (reset! armed false)
+  (reset! kick 0.0) (reset! beat-n 0) (reset! armed false) (reset! puff-armed false) (reset! scene/beat-count 0)
+  (reset! scene/audio-puffs [])
   (reset! scene/audio-palette nil)  ; back to the theme's own palette
   (reset! scene/audio-keep nil)
   (reset! scene/audio-dt nil)
-  (reset! scene/audio-emit nil))
+  (reset! scene/audio-emit nil)
+  (reset! scene/audio-wind nil)
+  (reset! scene/audio-voice nil))
 
 (defn start!
   "Analyse `path`, play it via an external player, and modulate per-colour keep
@@ -351,7 +499,7 @@
   (stop!)
   (when amp (swap! core/params assoc :audio-amp amp))
   (let [p        @core/params
-        nb       (or bands (max 1 (count (or (:palette p) (:palette (scene/theme p)) [1]))))
+        nb       (or bands (band-count p))
         analysis (analyze path :bands nb :fps 60)
         cmd      (or (player-cmd path)
                      (throw (ex-info "No external audio player found (mpv/ffplay/paplay)" {})))
@@ -359,8 +507,11 @@
                            (.redirectOutput ProcessBuilder$Redirect/DISCARD)
                            (.redirectError ProcessBuilder$Redirect/DISCARD)))
         t0       (System/nanoTime)]
-    (reroll-colors! nb)
+    (reroll-colors! (color-count p))
     (recolor-live!)
+    ;; agents built before the palette was rolled carry only band-count groups;
+    ;; rebuild next frame so they spread across ALL the rolled hues (not just 3).
+    (reset! core/reset? true)
     (reset! state {:proc proc :analysis analysis :t0 t0})
     ;; the render loop calls this once per frame => in lockstep, never starved
     (reset! scene/audio-hook (fn [] (try (tick!) (catch Throwable _))))
@@ -373,9 +524,18 @@
     (mpv-cmd! "{\"command\":[\"seek\",0,\"absolute\"]}")
     (mpv-cmd! "{\"command\":[\"set_property\",\"pause\",false]}")
     (swap! state assoc :t0 (System/nanoTime) :paused-at nil)
-    (reroll-colors! (-> st :analysis :bands long))  ; fresh random colours on every restart
+    (reroll-colors! (color-count @core/params))     ; fresh random colours on every restart
     (recolor-live!)                                  ; repaint now (the 'r' rebuild also re-applies it)
-    (reset! kick 0.0) (reset! beat-n 0) (reset! armed false)))
+    (reset! kick 0.0) (reset! beat-n 0) (reset! armed false) (reset! puff-armed false) (reset! scene/beat-count 0)))
+
+(defn reseed-colors!
+  "Roll a fresh random agent palette WITHOUT seeking the track — the 'Reset field'
+   button path, so a field reset gives new random colours like 'r' does. No-op when
+   no audio is active (non-audio :p-rand-color? rerolls itself in scene/new-fluid)."
+  []
+  (when @state
+    (reroll-colors! (color-count @core/params))
+    (recolor-live!)))
 
 (defn set-paused!
   "Pause/resume the audio together with the sim (wired to the sketch's space key).
@@ -423,10 +583,39 @@
 (comment
   (require '[smoke.audio :as a] :reload)
   (swap! smoke.core/params merge (smoke.scene/preset-params :tropic-rivers))
+
   (a/play-with-sim! "/tmp/song.wav")
   (a/play-with-sim! "/home/benj/repos/musicanalysis/Alle Warten [Qdll_yQEtwQ].wav")
 
   (a/play-with-sim! "/home/benj/repos/musicanalysis/vom Feisten @ 44 Hertz at Kater Berlin - 12⧸12⧸25 [c7bSbvAHbMc].wav")
+  (swap! smoke.core/params assoc :audio-amp 0.3)
+  (swap! smoke.core/params assoc :audio-dt-amp 0.2)
+  (:keep @smoke.core/params)
+  0.9186
+  (:visc @smoke.core/params)
+  0.03
 
-  (swap! smoke.core/params assoc :audio-amp 0.05)
+  (a/play-with-sim! "/home/benj/repos/musicanalysis/thamcut.wav")
+
+  (a/play-with-sim! "/home/benj/repos/musicanalysis/such-a-mess-kyle-watson-bass-dub.wav")
+  (a/play-with-sim! "/home/benj/repos/musicanalysis/d-neuland-vom-feisten-i-chaos.wav")
+  (a/play-with-sim!
+   "/home/benj/repos/musicanalysis/aldebara3min.wav")
+
+  ;; ── how to start the PUFFS version (spectral puffs + slime flow + voice) ──
+  (swap! smoke.core/params merge (smoke.scene/preset-params :puffs))
+  (a/play-with-sim! "/home/benj/repos/musicanalysis/aldebara.wav")     ; full song
+  (a/play-with-sim! "/home/benj/repos/musicanalysis/alicante.wav")     ; Boris Brejcha — Alicante
+
+  ;; ── voice centre modes (live-switch; needs vocals/onsets to fire) ──
+  (swap! smoke.core/params merge {:voice-amount 2.5 :voice-radius 0.3 :voice-random? false :voice-agents? false :voice-ring 0.0 :voice-bloom 0.0}) ; POINT
+  (swap! smoke.core/params merge {:voice-amount 2.0 :voice-radius 0.6 :voice-random? true  :voice-agents? false :voice-ring 0.0 :voice-bloom 0.0}) ; SCATTER
+  (swap! smoke.core/params merge {:voice-amount 0.0 :voice-random? false :voice-agents? false :voice-ring 11.0 :voice-bloom 0.0})                   ; RING
+  (swap! smoke.core/params merge {:voice-amount 0.0 :voice-random? false :voice-agents? true :voice-agent-count 130 :voice-ring 0.0 :voice-bloom 0.0}) ; AGENTS
+  (swap! smoke.core/params merge {:voice-amount 0.0 :voice-random? false :voice-agents? false :voice-ring 0.0 :voice-bloom 1.0})                    ; BLOOM
+  (swap! smoke.core/params merge {:voice-amount 1.5 :voice-radius 0.3 :voice-random? true :voice-agents? true :voice-ring 7.0 :voice-bloom 0.5})    ; ALL
+
+  ;; audio palette: random by default; pick a curated set then re-roll
+  (swap! smoke.core/params assoc :audio-palette-set :sunset) (a/reseed-colors!)  ; :ice :ember :forest :ocean :sepia :pastel :candy :autumn / nil=random
+
   (a/stop!))

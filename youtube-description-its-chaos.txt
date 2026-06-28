@@ -1,0 +1,47 @@
+Daniel Neuland & vom Feisten — "It's Chaos"
+Audio-reactive generative visuals
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎵  MUSIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Track:   It's Chaos (Original Mix)
+Artists: Daniel Neuland & vom Feisten
+Label:   Jannowitz Records
+Genre:   Indie Dance (125 BPM)
+Release: 2025-01-13
+
+℗ 2025 Jannowitz Records. All music © the respective artists & label —
+I don't own the music, it's used here to credit and support the release.
+Please follow and buy:
+
+• Beatport:              https://www.beatport.com/track/its-chaos/19734345
+• Premiere (SoundCloud): https://soundcloud.com/melodic-deep-vibes/premiere-daniel-neuland-vom-feisten-its-chaos-original-mix-jannowitz-records
+• 44 Hertz (label):      https://soundcloud.com/44-hertz
+• Daniel Neuland:        https://www.beatport.com/artist/daniel-neuland/802757
+• vom Feisten:           https://www.beatport.com/artist/vom-feisten/462925
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌫️  VISUALS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Real-time generative smoke, painted by the music. Nothing is pre-rendered —
+every frame is simulated live.
+
+Under the hood:
+ • A spectral fluid solver (Jos Stam's "Stable Fluids", FFT formulation)
+   carries the smoke.
+ • Thousands of Physarum (slime-mould) agents paint into it, growing the
+   flowing, vein-like structures.
+ • The track is analysed live and mapped onto the image:
+     – each frequency band drives a colour — silence stays white, energy
+       fades the palette in (bass / mid / treble → their own hues)
+     – beat onsets kick the simulation's time-step, so the smoke lurches
+       forward on every hit, then eases back
+     – overall loudness feeds emission and per-colour persistence, so loud
+       passages bloom denser and brighter
+
+Built in Clojure + Quil (OpenGL).
+Code / source:  https://github.com/benjamin-asdf/bjs-smoke-viz
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#IndieDance #44Hertz #JannowitzRecords #GenerativeArt #Visualizer
+#AudioReactive #FluidSimulation #SlimeMould #Physarum #Clojure #LiveVisuals
