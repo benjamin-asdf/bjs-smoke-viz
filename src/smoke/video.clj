@@ -25,7 +25,10 @@
   (:require [smoke.scene :as scene]
             [smoke.fluid :as f]
             [smoke.audio :as audio]
-            [clojure.string])
+            [clojure.string]
+            [clojure.pprint]
+            [clojure.edn]
+            [clojure.java.shell :as sh])
   (:import [java.io OutputStream File]
            [java.lang ProcessBuilder ProcessBuilder$Redirect]))
 
@@ -170,9 +173,167 @@
      :render [w h] :fps fps :seconds (/ (double total) fps)
      :exit (.exitValue proc) :ffmpeg-log (.getPath log)}))
 
+;; ---------------------------------------------------------------------------
+;; Instagram/TikTok Reels: vertical 9:16 convenience wrapper.
+
+(def ^:const REEL-W 1080)   ; Instagram Reels / TikTok native portrait size
+(def ^:const REEL-H 1920)
+
+(defn- ping-pong!
+  "Post-process `in` mp4 into a forward+reverse (boomerang) clip at `out` — a
+   guaranteed-seamless loop (video only; audio is dropped). Re-encodes."
+  [in out crf]
+  (let [log (File/createTempFile "smoke-loop" ".log")
+        ff  ["ffmpeg" "-y" "-hide_banner" "-loglevel" "warning" "-i" in
+             "-filter_complex" "[0:v]split[a][b];[b]reverse[r];[a][r]concat=n=2:v=1:a=0[v]"
+             "-map" "[v]" "-c:v" "libx264" "-pix_fmt" "yuv420p" "-preset" "medium"
+             "-crf" (str crf) out]
+        proc (.start (doto (ProcessBuilder. ^java.util.List ff)
+                       (.redirectOutput ProcessBuilder$Redirect/DISCARD)
+                       (.redirectError (ProcessBuilder$Redirect/to log))))]
+    (.waitFor proc)
+    {:exit (.exitValue proc) :ffmpeg-log (.getPath log)}))
+
+(defn- git-info
+  "Provenance for the manifest: HEAD commit, `git describe`, and whether the tree
+   is dirty (the reel was rendered from uncommitted changes). nil if not a repo."
+  []
+  (try
+    (let [run (fn [& args]
+                (let [r (apply sh/sh "git" args)]
+                  (when (zero? (long (:exit r))) (clojure.string/trim (:out r)))))]
+      {:commit   (run "rev-parse" "HEAD")
+       :describe (run "describe" "--always" "--dirty" "--tags")
+       :dirty?   (not (clojure.string/blank? (run "status" "--porcelain")))})
+    (catch Exception _ nil)))
+
+(defn- write-sidecar!
+  "Write a self-documenting <out>.edn next to the reel so every clip records HOW it
+   was made and leaves room to record HOW IT PERFORMED:
+     :id      stable id (= output basename) — link an Insta post back to this
+     :params  the effective reel! options used
+     :repro   the exact (smoke.video/reel! ...) form to regenerate it
+     :git     commit / describe / dirty? at render time
+     :rendered-at  ISO-8601 timestamp
+     :result  frames / resolution / fps / duration
+     :insta   EMPTY metrics slot — fill in posted-url + views/likes after posting,
+              then reach can be joined back to :params to tune what works."
+  [out-path call-opts result]
+  (let [sidecar (str out-path ".edn")
+        id      (clojure.string/replace (.getName (File. ^String out-path)) #"\.[^.]+$" "")
+        data    {:id          id
+                 :out         out-path
+                 :rendered-at (str (java.time.Instant/now))
+                 :git         (git-info)
+                 :params      call-opts
+                 :repro       (pr-str (concat (list 'smoke.video/reel! out-path)
+                                              (mapcat identity call-opts)))
+                 :result      (select-keys result [:frames :song-frames :tail-frames
+                                                   :render :fps :seconds :boomerang :exit])
+                 ;; fill in after posting → lets us correlate reach with :params:
+                 :insta       {:posted-url nil :posted-at nil
+                               :views nil :likes nil :comments nil :shares nil :saves nil}}]
+    (spit sidecar (with-out-str (clojure.pprint/pprint data)))
+    sidecar))
+
+(defn reel!
+  "Render a vertical 9:16 clip sized for Instagram Reels / TikTok (1080x1920).
+   Thin wrapper over `render!`: forces portrait :render and applies reel-friendly
+   defaults, but every `render!` option can still be overridden via kwargs.
+   Defaults: :fps 30, :seconds 12, :preset :galaxy-slime. The square sim grid is
+   cover-fit into the portrait frame (centre crop), so any look works.
+   Extra options:
+     :boomerang  when true AND there is no :audio, append a reversed copy so the
+                 clip ping-pongs into a seamless loop (popular silent-reel look).
+                 Doubles the final duration. Ignored when :audio is set.
+     :manifest?  write a <out>.edn provenance sidecar (default true) — params,
+                 repro command, git commit, timestamp, and an Insta metrics slot.
+   Returns the render! result map (with :out = out-path)."
+  [out-path & {:as opts}]
+  (let [audio     (:audio opts)
+        manifest? (:manifest? opts true)
+        crf       (long (:crf opts 18))
+        ;; effective, reproducible options (portrait size forced last)
+        call-opts (merge {:fps 30 :seconds 12 :preset :galaxy-slime}
+                         (dissoc opts :manifest?)
+                         {:render [REEL-W REEL-H]})
+        boomerang (:boomerang call-opts)
+        render-opts (dissoc call-opts :boomerang)
+        result    (if (and boomerang (not audio))
+                    (let [tmp (.getPath (File/createTempFile "smoke-reel" ".mp4"))
+                          r   (apply render! tmp (mapcat identity render-opts))]
+                      (ping-pong! tmp out-path crf)
+                      (assoc r :out out-path :boomerang true
+                             :seconds (* 2.0 (double (:seconds r)))))
+                    (do (when (and boomerang audio)
+                          (println "reel!: :boomerang ignored with :audio (reversed audio sounds wrong)"))
+                        (apply render! out-path (mapcat identity render-opts))))]
+    (when manifest? (write-sidecar! out-path call-opts result))
+    result))
+
+;; ---------------------------------------------------------------------------
+;; Manifest + reach analysis: aggregate the per-reel sidecars, and once the
+;; :insta metrics are filled in (after posting), rank what gets reach so we tune.
+
+(defn scan-reels
+  "Read every <reel>.edn sidecar in `dir` into a vector of metadata maps."
+  [dir]
+  (->> (seq (.listFiles (File. ^String dir)))
+       (map (fn [^File f] (.getName f)))
+       (filter #(clojure.string/ends-with? % ".edn"))
+       sort
+       (keep #(try (clojure.edn/read-string (slurp (str dir "/" %))) (catch Exception _ nil)))
+       vec))
+
+(defn manifest-md!
+  "Aggregate every sidecar in `dir` into `dir`/MANIFEST.md — one row per reel with
+   track/preset/params, git commit, timestamp and reach columns (blank until the
+   `:insta` metrics are filled into the sidecars after posting)."
+  [dir]
+  (let [rows (scan-reels dir)
+        cell (fn [v] (if (nil? v) "" (str v)))
+        ts   (fn [m] (let [s (cell (:rendered-at m))] (subs s 0 (min 19 (count s)))))
+        line (fn [m]
+               (let [p (:params m) i (:insta m)]
+                 (str "| " (:id m) " | " (cell (:preset p)) " | " (cell (:audio p))
+                      " | " (cell (:seconds p)) "s | " (cell (:describe (:git m)))
+                      " | " (ts m) " | " (cell (:views i)) " | " (cell (:likes i))
+                      " | " (cell (:posted-url i)) " |")))
+        md   (str "# Reels manifest\n\n"
+                  "Auto-generated from the per-reel `.edn` sidecars via "
+                  "`(smoke.video/manifest-md! \"" dir "\")`.\n"
+                  "Reach columns stay blank until you fill `:insta` in each sidecar "
+                  "after posting; then `(smoke.video/reach-report \"" dir "\")`.\n\n"
+                  "| id | preset | audio | len | commit | rendered (UTC) | views | likes | url |\n"
+                  "|----|--------|-------|-----|--------|----------------|-------|-------|-----|\n"
+                  (clojure.string/join "\n" (map line rows)) "\n")]
+    (spit (str dir "/MANIFEST.md") md)
+    {:reels (count rows) :manifest (str dir "/MANIFEST.md")}))
+
+(defn reach-report
+  "Once `:insta`/`:views` are filled in the sidecars, rank reels and average reach
+   by preset and by track => what to make more of. Reels without :views are
+   skipped. Returns {:by-reel [[id views]...] :by-preset ... :by-track ...}."
+  [dir]
+  (let [rows  (filter #(number? (:views (:insta %))) (scan-reels dir))
+        views (fn [m] (double (:views (:insta m))))
+        track (fn [m] (first (clojure.string/split (str (:id m)) #"-" 2)))
+        avg   (fn [ms] (when (seq ms) (/ (reduce + (map views ms)) (count ms))))
+        grp   (fn [kf] (->> (group-by kf rows)
+                            (map (fn [[k ms]] [k {:n (count ms) :avg-views (avg ms)}]))
+                            (sort-by (comp - double :avg-views second))
+                            vec))]
+    {:by-reel   (->> rows (sort-by (comp - views)) (mapv #(vector (:id %) (long (views %)))))
+     :by-preset (grp #(:preset (:params %)))
+     :by-track  (grp track)}))
+
 (comment
   (require '[smoke.video :as v] :reload)
   ;; whole-track 1080p hero look:
   (v/render! "/tmp/smoke.mp4" :audio "/tmp/song.wav" :preset :galaxy-slime :render [1920 1080])
   ;; quick silent 5 s test:
-  (v/render! "/tmp/test.mp4" :seconds 5 :render [1280 720]))
+  (v/render! "/tmp/test.mp4" :seconds 5 :render [1280 720])
+  ;; vertical Insta reel, audio-reactive, 12 s of a track:
+  (v/reel! "reels/brejcha-slime.mp4" :audio "music/brejcha.wav" :preset :galaxy-slime)
+  ;; silent seamless boomerang loop:
+  (v/reel! "reels/loop.mp4" :preset :swarm :seconds 6 :boomerang true))

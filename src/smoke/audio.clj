@@ -614,6 +614,9 @@
   (a/play-with-sim! "/home/benj/repos/musicanalysis/aldebara.wav") ; full song
   (a/play-with-sim! "/home/benj/repos/musicanalysis/alicante.wav") ; Boris Brejcha — Alicante
 
+
+  (a/play-with-sim! "/home/benj/repos/bjs-smoke-viz/media/music/44hertz.wav")
+
   (swap! smoke.core/params merge
 
          {:keep 0.92
@@ -656,6 +659,8 @@
            :stars false :star-thresh 2.5 :star-radius 3 :star-speed 0.25
            :jet-color [1.0 0.3 0.08] :jet-count 3 :palette [[1.0 1.0 1.0]] :boids nil
            :depth-layer false :depth-layers 3 :depth-scale 0.35 :depth-dim 0.5})
+
+
   (a/play-with-sim! "/home/benj/repos/musicanalysis/d-neuland-vom-feisten-i-chaos.wav")
 
   ;; ── beat/onset detection: play with the thresholds (a beat = spectral-flux
@@ -669,20 +674,20 @@
   ;;    :pulse-thresh = score deadzone (lower => fires more often / on softer mids),
   ;;    :pulse-contrast = how strongly bass+treble suppress it (selectivity),
   ;;    :pulse-band-lo/hi = which spectral fraction counts as the pulse band ──
-  (swap! smoke.core/params assoc :pulse-thresh 0.06) ; more sensitive
-  (swap! smoke.core/params assoc :pulse-thresh 0.20) ; only strong mids
+
+
+  (swap! smoke.core/params assoc :pulse-thresh 0.006)
+  (swap! smoke.core/params assoc :pulse-thresh 0.20)
 
 
   (swap! smoke.core/params assoc :pulse-contrast 1.0)
 
-
-
   (swap! smoke.core/params assoc :pulse-band-lo 0.1 :pulse-band-hi 0.5) ; pulse on lower freqs
   (swap! smoke.core/params assoc :pulse-band-lo 0.4 :pulse-band-hi 0.9) ; pulse on higher freqs
 
+  (swap! smoke.core/params assoc :pulse-thresh 0.20 :pulse-contrast 0.6 :pulse-band-lo 0.2 :pulse-band-hi 0.65)
 
 
 
-  (swap! smoke.core/params assoc :pulse-thresh 0.12 :pulse-contrast 0.6 :pulse-band-lo 0.2 :pulse-band-hi 0.65) ; defaults
 
   (a/stop!))
