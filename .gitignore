@@ -9,3 +9,5 @@
 
 # rendered videos (too large for git)
 *.mp4
+/.insta.edn
+/media/
