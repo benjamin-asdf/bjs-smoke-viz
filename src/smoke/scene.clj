@@ -627,8 +627,11 @@
                 step-dur (fn [s] (if (or (zero? s) (= s (dec steps))) edge every))
                 grow  (reduce + (map step-dur (range steps)))
                 cycle (max 1 (+ grow rest))
-                rmin  (double (:pulse-shape-min p 3))
+                rmin0 (double (:pulse-shape-min p 3))
                 rmax  (double (:pulse-shape-size p 90))
+                ;; drop the smallest size: begin one step above the configured
+                ;; min so the sequence starts at the old 2nd-smallest shape
+                rmin  (+ rmin0 (/ (- rmax rmin0) (double (max 1 (dec steps)))))
                 bc    (long @beat-count)
                 bphase (mod bc cycle)                  ; beat within the grow+rest cycle
                 new-beat? (not= bc (long (:last-bc cyc -1)))
