@@ -20,7 +20,8 @@
      ffmpeg -i song.mp3 song.wav"
   (:require [smoke.core :as core]
             [smoke.scene :as scene]
-            [smoke.physarum :as phys])
+            [smoke.physarum :as phys]
+            [clojure.string :as str])
   (:import [javax.sound.sampled AudioSystem AudioFormat AudioFormat$Encoding]
            [org.jtransforms.fft DoubleFFT_1D]
            [java.io File]
@@ -210,19 +211,21 @@
 
 (defn- reroll-colors!
   "Pick a fresh random seed and publish a new set of `nb` vivid hues into
-   scene/audio-palette, toned by the live :audio-sat / :audio-lift mood (so it's
+   scene/audio-palette, toned by the :audio-sat / :audio-lift mood (so it's
    not only neon), so the next agents built from it (every 'r', and offline
-   renders) wear a freshly generated colour set."
-  [^long nb]
-  (let [seed (.nextLong (java.util.Random.))
-        p    @core/params
-        sat  (double (:audio-sat p 1.0)) lift (double (:audio-lift p 0.0))
-        ;; curated colour set if chosen, else freshly generated random vivid hues
-        base (or (get scene/audio-palettes (:audio-palette-set p))
-                 (vivid-palette seed nb))]
-    (reset! color-seed seed)
-    (reset! scene/audio-palette (tone-palette base sat lift))
-    seed))
+   renders) wear a freshly generated colour set. The mood/palette keys are read
+   from `p` — pass the offline render's params so its :audio-palette-set is
+   honoured; the 1-arg arity falls back to the live @core/params for live use."
+  ([^long nb] (reroll-colors! nb @core/params))
+  ([^long nb p]
+   (let [seed (.nextLong (java.util.Random.))
+         sat  (double (:audio-sat p 1.0)) lift (double (:audio-lift p 0.0))
+         ;; curated colour set if chosen, else freshly generated random vivid hues
+         base (or (get scene/audio-palettes (:audio-palette-set p))
+                  (vivid-palette seed nb))]
+     (reset! color-seed seed)
+     (reset! scene/audio-palette (tone-palette base sat lift))
+     seed)))
 
 (defn- recolor-live!
   "Repaint the agents in the running sketch from the current hue palette, so the
@@ -264,6 +267,69 @@
       (.write ch (java.nio.ByteBuffer/wrap (.getBytes (str json "\n") "UTF-8"))))
     true
     (catch Throwable _ false)))
+
+(defn- mpv-get
+  "Value of mpv property `prop` (e.g. \"time-pos\", \"duration\") as a double, or
+   nil if the property is unavailable / not yet loaded / no IPC socket. Sends a
+   get_property tagged request_id:7 and scans the reply for OUR success line
+   (mpv interleaves async event lines, so we filter on the request_id). mpv's
+   IPC replies are flat JSON, so a regex is enough — no JSON dependency."
+  [prop]
+  (try
+    (with-open [ch (java.nio.channels.SocketChannel/open java.net.StandardProtocolFamily/UNIX)]
+      (.connect ch (java.net.UnixDomainSocketAddress/of ^String ipc-sock))
+      (.configureBlocking ch false)   ; NEVER block the render/start thread on a hung peer
+      (.write ch (java.nio.ByteBuffer/wrap
+                  (.getBytes (str "{\"command\":[\"get_property\",\"" prop "\"],\"request_id\":7}\n") "UTF-8")))
+      (let [buf (java.nio.ByteBuffer/allocate 4096) sb (StringBuilder.)]
+        (loop [guard 0]                ; guard*sleep bounds the wait (~1s) if no reply comes
+          (when (< guard 200)
+            (.clear buf)
+            (let [n (.read ch buf)]    ; non-blocking: 0 = nothing yet, -1 = EOF
+              (when (>= n 0)
+                (when (pos? n)
+                  (.flip buf)
+                  (let [bs (byte-array (.remaining buf))]
+                    (.get buf bs)
+                    (.append sb (String. bs "UTF-8"))))
+                (or (some (fn [l]
+                            (when (and (re-find #"\"request_id\"\s*:\s*7" l)
+                                       (re-find #"\"error\"\s*:\s*\"success\"" l))
+                              (when-let [m (re-find #"\"data\"\s*:\s*(-?[0-9.eE+]+)" l)]
+                                (Double/parseDouble (second m)))))
+                          (str/split-lines (.toString sb)))
+                    (do (when (zero? n) (Thread/sleep 5))
+                        (recur (inc guard))))))))))
+    (catch Throwable _ nil)))
+
+(defn- sync-t0!
+  "Anchor the modulation clock to mpv's REAL playback position. mpv is spawned
+   paused (see `start!`) so the process spawn + demux + audio-device-open latency
+   doesn't leak into the clock. We wait for the file to load (duration known),
+   unpause, then set t0 = now - actual time-pos so the smoke lines up with the
+   first audible sample. Falls back to plain nanoTime if mpv/IPC isn't there."
+  ^long []
+  (or
+   (try
+     (let [now #(System/nanoTime)
+           deadline (fn [ms] (+ (now) (* (long ms) 1000000)))]
+       ;; 1. wait until mpv has the file loaded (duration resolves once demuxed)
+       (let [dl (deadline 5000)]
+         (loop [] (when (and (nil? (mpv-get "duration")) (< (now) dl))
+                    (Thread/sleep 15) (recur))))
+       ;; 2. resume playback
+       (mpv-cmd! "{\"command\":[\"set_property\",\"pause\",false]}")
+       ;; 3. anchor once the clock is actually advancing (real audio started)
+       (let [dl (deadline 2000)]
+         (loop []
+           (let [tp (mpv-get "time-pos")]
+             (cond
+               (and tp (pos? (double tp)))
+               (- (System/nanoTime) (long (* (double tp) 1.0e9)))
+               (< (System/nanoTime) dl) (do (Thread/sleep 5) (recur))
+               :else nil)))))
+     (catch Throwable _ nil))
+   (System/nanoTime)))
 
 (defn- pulse-score
   "Heuristic 'vocal presence' (0..1) from band `gains`: energy concentrated in the
@@ -378,7 +444,7 @@
                   ;; live; advance repaints the agents via scene/recolor-pending?)
                   (let [cyc (long (:audio-color-cycle p 0))]
                     (when (and (pos? cyc) (zero? (mod @beat-n cyc)))
-                      (reroll-colors! (color-count p))
+                      (reroll-colors! (color-count p) p)
                       (reset! scene/recolor-pending? true)
                       ;; flip the pulse source to a fresh random bright colour too
                       (reset! scene/pulse-color-cur (rand-nth scene/pulse-bright-colors)))))
@@ -469,7 +535,7 @@
   (reset! scene/audio-wind nil)
   (reset! scene/audio-pulse nil)
   (reset! scene/pulse-color-cur nil)
-  (reroll-colors! (color-count p)))
+  (reroll-colors! (color-count p) p))
 
 (defn band-count
   "Number of FFT frequency bands for `p`. Defaults to the active palette's colour
@@ -510,10 +576,21 @@
         analysis (analyze path :bands nb :fps 60)
         cmd      (or (player-cmd path)
                      (throw (ex-info "No external audio player found (mpv/ffplay/paplay)" {})))
+        is-mpv   (= "mpv" (first cmd))
+        ;; mpv: load PAUSED (insert --pause before the path) so process-spawn +
+        ;; demux + audio-device-open latency doesn't leak into the clock; sync-t0!
+        ;; unpauses and anchors t0 to the real playback position.
+        cmd      (if is-mpv
+                   (into (vec (butlast cmd)) ["--pause" (last cmd)])
+                   cmd)
+        ;; drop any stale socket from a crashed/orphan mpv so the new instance
+        ;; binds a FRESH one — otherwise it fails to bind and our clock sync
+        ;; would read the old instance's position (huge drift).
+        _        (when is-mpv (try (.delete (File. ^String ipc-sock)) (catch Throwable _)))
         proc     (.start (doto (ProcessBuilder. ^java.util.List cmd)
                            (.redirectOutput ProcessBuilder$Redirect/DISCARD)
                            (.redirectError ProcessBuilder$Redirect/DISCARD)))
-        t0       (System/nanoTime)]
+        t0       (if is-mpv (sync-t0!) (System/nanoTime))]
     (reroll-colors! (color-count p))
     (recolor-live!)
     ;; agents built before the palette was rolled carry only band-count groups;
@@ -614,7 +691,6 @@
   (a/play-with-sim! "/home/benj/repos/musicanalysis/aldebara.wav") ; full song
   (a/play-with-sim! "/home/benj/repos/musicanalysis/alicante.wav") ; Boris Brejcha — Alicante
 
-
   (a/play-with-sim! "/home/benj/repos/bjs-smoke-viz/media/music/44hertz.wav")
 
   (swap! smoke.core/params merge
@@ -660,7 +736,6 @@
            :jet-color [1.0 0.3 0.08] :jet-count 3 :palette [[1.0 1.0 1.0]] :boids nil
            :depth-layer false :depth-layers 3 :depth-scale 0.35 :depth-dim 0.5})
 
-
   (a/play-with-sim! "/home/benj/repos/musicanalysis/d-neuland-vom-feisten-i-chaos.wav")
 
   ;; ── beat/onset detection: play with the thresholds (a beat = spectral-flux
@@ -675,10 +750,8 @@
   ;;    :pulse-contrast = how strongly bass+treble suppress it (selectivity),
   ;;    :pulse-band-lo/hi = which spectral fraction counts as the pulse band ──
 
-
   (swap! smoke.core/params assoc :pulse-thresh 0.006)
   (swap! smoke.core/params assoc :pulse-thresh 0.20)
-
 
   (swap! smoke.core/params assoc :pulse-contrast 1.0)
 
@@ -686,8 +759,5 @@
   (swap! smoke.core/params assoc :pulse-band-lo 0.4 :pulse-band-hi 0.9) ; pulse on higher freqs
 
   (swap! smoke.core/params assoc :pulse-thresh 0.20 :pulse-contrast 0.6 :pulse-band-lo 0.2 :pulse-band-hi 0.65)
-
-
-
 
   (a/stop!))

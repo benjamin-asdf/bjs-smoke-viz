@@ -149,19 +149,40 @@
         freq? (boolean (and gains (:p-freq-react? p)))
         nb    (long (if gains (alength gains) 1))
         fsa   (double (:p-freq-speed p 0.0))
-        fda   (double (:p-freq-deposit p 0.0))]
+        fda   (double (:p-freq-deposit p 0.0))
+        ;; ANTAGONISTIC colours: different colour species fight for space.
+        ;; :p-antagonist-sense => an agent is attracted to its OWN colour and
+        ;;   REPELLED by rival colours (it steers away from foreign trails).
+        ;; :p-antagonist       => its deposit ERODES the rival colour channels at
+        ;;   the cell, so colours eat into each other => sharp territorial fronts.
+        ;; Both generalise over any palette via each agent's colour weights: the
+        ;; "rival" weight on channel c is (max_w - w_c), zero for its own dominant
+        ;; channel. (Both 0 by default => ordinary independent networks.)
+        antag  (double (:p-antagonist p 0.0))
+        asens  (double (:p-antagonist-sense p 0.0))
+        antag? (and (pos? antag) (not trail?))
+        asens? (and (pos? asens) (not trail?))]
     (dotimes [i cnt]
       (let [x (aget xs i) y (aget ys i) h (aget hs i)
             ;; each agent senses ITS OWN colour (weighted density) so the colours
             ;; form separate networks instead of mixing to white. (:trail mode
             ;; senses the shared white trail.)
             wr (aget ar i) wg (aget ag i) wb (aget ab i)
+            ;; max colour weight => the agent's own dominant channel. The rival
+            ;; weight on channel c is (mw - w_c): 0 for its own, positive for foreign.
+            mw (Math/max (double wr) (Math/max (double wg) (double wb)))
+            ;; EFFECTIVE sensing weights: own boosted, rivals turned NEGATIVE by
+            ;; :p-antagonist-sense so the agent steers away from foreign colours.
+            ;; (asens 0 => ewc = wc, the ordinary own-colour sensing.)
+            ewr (- (* wr (+ 1.0 asens)) (* asens mw))
+            ewg (- (* wg (+ 1.0 asens)) (* asens mw))
+            ewb (- (* wb (+ 1.0 asens)) (* asens mw))
             kl (f/idx n (long (wrap (+ x (* so (Math/cos (- h sa)))) n)) (long (wrap (+ y (* so (Math/sin (- h sa)))) n)))
             kc (f/idx n (long (wrap (+ x (* so (Math/cos h))) n))        (long (wrap (+ y (* so (Math/sin h))) n)))
             kr (f/idx n (long (wrap (+ x (* so (Math/cos (+ h sa)))) n)) (long (wrap (+ y (* so (Math/sin (+ h sa)))) n)))
-            cl (double (if trail? (aget trail kl) (+ (* wr (aget dr kl)) (* wg (aget dg kl)) (* wb (aget db kl)))))
-            cc (double (if trail? (aget trail kc) (+ (* wr (aget dr kc)) (* wg (aget dg kc)) (* wb (aget db kc)))))
-            cr (double (if trail? (aget trail kr) (+ (* wr (aget dr kr)) (* wg (aget dg kr)) (* wb (aget db kr)))))
+            cl (double (if trail? (aget trail kl) (+ (* ewr (aget dr kl)) (* ewg (aget dg kl)) (* ewb (aget db kl)))))
+            cc (double (if trail? (aget trail kc) (+ (* ewr (aget dr kc)) (* ewg (aget dg kc)) (* ewb (aget db kc)))))
+            cr (double (if trail? (aget trail kr) (+ (* ewr (aget dr kr)) (* ewg (aget dg kr)) (* ewb (aget db kr)))))
             ;; :haze agents don't steer toward the trail; everyone gets optional
             ;; random wander on top (slime keeps p-wander 0 => unchanged).
             hsteer (if haze? h
@@ -219,7 +240,15 @@
           :else
           (do (aset dr dk (+ (aget dr dk) (float (* depi (aget ar i)))))
               (aset dg dk (+ (aget dg dk) (float (* depi (aget ag i)))))
-              (aset db dk (+ (aget db dk) (float (* depi (aget ab i)))))))))
+              (aset db dk (+ (aget db dk) (float (* depi (aget ab i)))))))
+        ;; ANTAGONISTIC DEPOSIT: erode the rival colour channels at this cell
+        ;; (scaled by the agent's own deposit), clamped at 0 => colours eat into
+        ;; each other and carve sharp territorial fronts. Own channel = no erosion.
+        (when antag?
+          (let [er (* antag depi (- mw wr)) eg (* antag depi (- mw wg)) eb (* antag depi (- mw wb))]
+            (aset dr dk (float (Math/max 0.0 (- (aget dr dk) er))))
+            (aset dg dk (float (Math/max 0.0 (- (aget dg dk) eg))))
+            (aset db dk (float (Math/max 0.0 (- (aget db dk) eb))))))))
     (when trail?
       (diffuse-decay! n trail ttmp (double (:p-decay p))))
     phys))

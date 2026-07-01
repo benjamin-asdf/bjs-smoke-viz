@@ -14,7 +14,8 @@
    wind drags everything."
   (:require [smoke.fluid :as f]
             [smoke.physarum :as phys]
-            [smoke.boids :as boids]))
+            [smoke.boids :as boids]
+            [smoke.flock :as flock]))
 
 (set! *warn-on-reflection* true)
 (set! *unchecked-math* :warn-on-boxed)
@@ -67,6 +68,12 @@
 ;; instead of all skewing warm — gives vivid multi-colour smoke.
 (def rgb3   [[1.0 0.12 0.10] [0.10 0.45 1.0] [0.20 1.0 0.28]])
 
+;; --- "Wakan Tanka" mood palettes (soul · human · nature · connected) ---------
+;; Same physarum substrate, three states of matter:
+(def blood  [[0.45 0.0 0.02] [0.85 0.05 0.04] [1.0 0.30 0.06]])  ; blut fliesst, kampf: dark clot / blood red / ember
+(def frost  [[0.12 0.40 0.95] [0.25 0.75 1.0] [0.80 0.95 1.0]])  ; eis gefriert, kaelte: deep ice / glacier / rime-white
+(def ocean3 [[0.02 0.28 0.42] [0.05 0.55 0.62] [0.35 0.88 0.82]]) ; der ozean: abyss / sea / foam
+
 (def themes
   {:jets    {:mode :sources
              :sources [{:color [1.0 0.15 0.10] :emit 1.0 :r 3 :motion {:type :brownian :base [0.35 0.55] :amp 0.0012}}
@@ -89,6 +96,39 @@
              :palette rgb3
              :p-defaults {:p-count 600 :p-speed 1.8 :p-deposit 0.6 :p-wind 1.2 :p-wander 0.4
                           :buoy 0.7 :keep 0.96 :expos 1.1 :saturation 2.8}}
+   ;; a FLOCK of small balls (boids) that ARE the smoke source: they flock by the
+   ;; Reynolds rules, ride the wind, and deposit their colour as they go. The fluid
+   ;; advects it into smoke; the deposit footprint + :flock-flow sweep the look from
+   ;; haze -> slime -> rivers. The balls are drawn on top (:flock-draw?). See smoke.flock.
+   :boids   {:mode :flock
+             :palette rgb3
+             :p-defaults {:flock-count 320 :flock-radius 14.0 :flock-sep-dist 6.0
+                          :flock-sep 1.5 :flock-align 0.75 :flock-cohere 0.55
+                          :flock-accel 0.5 :flock-max-speed 2.2 :flock-min-speed 0.6
+                          :flock-damp 0.96 :flock-wind 0.5
+                          :flock-deposit 0.45 :flock-dep-radius 1.8 :flock-flow 0.0
+                          :flock-flow-blend 0.35
+                          :flock-draw? true :flock-ball-r 3 :flock-ball-bright 1.2
+                          :buoy 0.2 :keep 0.965 :expos 1.0 :saturation 3.2 :wind 2.5}}
+   ;; COMBINED: physarum SLIME networks + a boid FLOCK on top, both depositing into
+   ;; the same smoke grid. The flock stirs the fluid (:flock-flow), so the slime veins
+   ;; flow along the balls' paths; the slime density is there for the balls to plow
+   ;; through. :flock-with-phys? flips on the extra phys/step! in advance (mode :flock).
+   :boid-slime {:mode :flock
+                :palette rgb3
+                :p-defaults {;; --- physarum slime UNDER the flock (shares rgb3, sensed as density) ---
+                             :flock-with-phys? true :p-mode :smoke
+                             :p-count 2500 :p-sensor 9.0 :p-sense-angle 0.5 :p-turn 0.45
+                             :p-speed 1.1 :p-deposit 0.16 :p-wind 0.5 :p-wander 0.0
+                             ;; --- the flock of balls on top (river-style flow stir) ---
+                             :flock-count 260 :flock-radius 14.0 :flock-sep-dist 6.0
+                             :flock-sep 1.5 :flock-align 0.75 :flock-cohere 0.5
+                             :flock-accel 0.5 :flock-max-speed 2.2 :flock-min-speed 0.6
+                             :flock-damp 0.96 :flock-wind 0.6
+                             :flock-deposit 0.4 :flock-dep-radius 1.2 :flock-flow 6.0
+                             :flock-flow-blend 0.4
+                             :flock-draw? true :flock-ball-r 3 :flock-ball-bright 1.3
+                             :buoy 0.25 :keep 0.965 :expos 0.95 :saturation 3.3 :wind 1.5}}
    :rivers  {:mode :smoke    ; faint steering + wander => flowing strands between network and smoke
              :palette rgb3
              :p-defaults {:p-count 4000 :p-sensor 16.0 :p-sense-angle 0.6 :p-turn 0.12
@@ -154,19 +194,134 @@
    :candy  [[0.95 0.4 0.6] [1.0 0.6 0.5] [0.8 0.4 0.8] [0.5 0.5 0.9] [0.4 0.8 0.85] [0.95 0.8 0.4]]
    :autumn [[0.3 0.1 0.05] [0.6 0.2 0.08] [0.85 0.4 0.12] [0.9 0.6 0.2] [0.7 0.65 0.25] [0.5 0.55 0.2]]})
 
+;; reactive base for the pure-physarum looks: makes slime/rivers actually move to
+;; audio (freq-react agents + pulse + energy emission). Mood-locked => colour-cycle
+;; OFF so the palette stays in its colour family (no random bright flips).
+(def reactive-base
+  {:keep 0.94
+   :pulse? true :pulse-amount 1.0 :pulse-bloom 0.5 :pulse-agents? true
+   :pulse-shape :point :pulse-random? false
+   :p-freq-react? true :p-freq-speed 3.0 :p-freq-deposit 2.5 :audio-bands 10
+   :audio-amp 0.07 :audio-dt-amp 0.32 :audio-emit-amp 1.6 :audio-floor 0.02
+   :audio-lead-secs 0.06 :audio-color-cycle 0})
+
 ;; named full-look presets (theme + params) for the controls "preset" dropdown.
 ;; :galaxy-slime is the saved hero look (vivid slime, denser keep).
 (def presets
   [[:galaxy-slime (merge (theme-defaults :slime)   {:theme :slime   :keep 0.98 :palette rgb3})]
+   ;; --- "Wakan Tanka" trilogy: one substrate, three states of matter ---------
+   ;; blut fliesst, kampf — flowing red strands (rivers), urgent emission/dt
+   [:blood-battle (merge (theme-defaults :rivers) reactive-base
+                         {:theme :rivers :palette blood :audio-palette-set :ember
+                          :keep 0.93 :saturation 3.4 :buoy 0.5
+                          :p-wander 0.30 :audio-dt-amp 0.40 :audio-emit-amp 1.9
+                          :pulse-color [1.0 0.12 0.04]})]
+   ;; eis gefriert, kaelte — frozen crystalline LATTICE (slime networks = connected),
+   ;; slow + persistent so the ice "holds" between beats
+   [:frost        (merge (theme-defaults :slime) reactive-base
+                         {:theme :slime :palette frost :audio-palette-set :ice
+                          :keep 0.97 :saturation 3.0
+                          :p-turn 0.30 :p-speed 0.9 :p-wander 0.0
+                          :p-freq-speed 1.5 :p-freq-deposit 2.0
+                          :audio-dt-amp 0.22 :pulse-bloom 0.7
+                          :pulse-color [0.85 0.95 1.0]})]
+   ;; der ozean — deep flowing currents + swell (rivers), foam-bright pulse
+   [:ocean-soul   (merge (theme-defaults :rivers) reactive-base
+                         {:theme :rivers :palette ocean3 :audio-palette-set :ocean
+                          :keep 0.95 :saturation 3.2 :buoy 0.45
+                          :p-wander 0.35 :p-wind 1.1
+                          :pulse-color [0.5 0.95 0.9]})]
+   ;; ANTAGONISTIC slime: 3 colour species (rgb) that repel + erode each other =>
+   ;; competing territories with sharp fronts instead of overlapping networks
+   [:antag-slime  (merge (theme-defaults :slime)
+                         {:theme :slime :palette rgb3 :keep 0.96 :saturation 3.4
+                          :p-count 4000 :p-wander 0.05
+                          :p-antagonist 0.7 :p-antagonist-sense 1.2})]
    [:summer-slime (merge (theme-defaults :slime)   {:theme :slime   :keep 0.98 :palette summer})]
    [:haze-smoke   (merge (theme-defaults :haze)    {:theme :haze    :palette rgb3})]
    [:summer-haze  (merge (theme-defaults :haze)    {:theme :haze    :palette summer})]
    [:rivers       (merge (theme-defaults :rivers)  {:theme :rivers  :palette rgb3})]
    [:tropic-rivers (merge (theme-defaults :rivers) {:theme :rivers  :palette tropic})]
    [:swarm        (merge (theme-defaults :swarm)   {:theme :swarm   :palette rgb3})]
+   ;; --- flock of small balls (boids) that make the smoke — three looks ---------
+   [:boids        (merge (theme-defaults :boids)   {:theme :boids   :palette rgb3})]
+   ;; tiny footprint + strong fluid stir => the balls drag flowing coloured RIVERS
+   [:boid-rivers  (merge (theme-defaults :boids)
+                         {:theme :boids :palette rgb3 :flock-dep-radius 1.0 :flock-deposit 0.6
+                          :flock-flow 9.0 :flock-flow-blend 0.4 :flock-cohere 0.35
+                          :flock-wind 0.3 :keep 0.96 :buoy 0.15})]
+   ;; big soft footprint, loose flock, no stir => diffuse coloured HAZE
+   [:boid-haze    (merge (theme-defaults :boids)
+                         {:theme :boids :palette rgb3 :flock-dep-radius 4.0 :flock-deposit 0.12
+                          :flock-flow 0.0 :flock-cohere 0.25 :flock-align 0.5 :flock-sep 1.8
+                          :flock-max-speed 1.6 :keep 0.95 :buoy 0.35 :wind 3.0 :saturation 2.8})]
+   ;; COMBINED physarum slime + boid flock (both into the same smoke)
+   [:boid-slime   (merge (theme-defaults :boid-slime) {:theme :boid-slime :palette rgb3})]
+   ;; combined + audio-reactive: slime + flock both surge/bloom per band on the beat
+   [:boid-slime-reactive (merge (theme-defaults :boid-slime) reactive-base
+                                {:theme :boid-slime :palette rgb3 :keep 0.90 :audio-floor 0.06
+                                 :flock-freq-react? true :flock-freq-speed 2.0 :flock-freq-deposit 2.5
+                                 :p-freq-react? true :p-freq-speed 3.0 :p-freq-deposit 2.5
+                                 :audio-bands 10 :audio-emit-amp 1.4
+                                 :pulse-amount 0.0 :pulse-agents? false :pulse-bloom 0.5})]
+   ;; CYBER-FLOCK — hand-tuned combined look (slime + reactive flock), captured live
+   ;; 2026-07-01: high viscosity + long sensor => broad glowing currents, saturation 6
+   ;; for neon, keep 0.9 so it stays crisp (no smear). Audio-reactive.
+   [:cyber-flock  (merge (theme-defaults :boid-slime)
+                         {:theme :boid-slime :palette rgb3
+                          :keep 0.9 :dt 0.0325 :visc 0.069 :buoy 0.25 :expos 0.95
+                          :saturation 6.0 :wind 1.5 :noise-scale 1.1594
+                          ;; physarum slime under the flock
+                          :flock-with-phys? true :p-mode :smoke
+                          :p-count 2500 :p-sensor 21.54 :p-speed 1.1 :p-deposit 1.0
+                          :p-wind 0.5 :p-bright 0.856
+                          :p-freq-react? true :p-freq-speed 3.0 :p-freq-deposit 2.5
+                          ;; the flock of balls on top
+                          :flock-count 260 :flock-cohere 0.5 :flock-wind 0.6
+                          :flock-deposit 0.4 :flock-dep-radius 1.2 :flock-flow 6.0
+                          :flock-flow-blend 0.4 :flock-ball-bright 1.3
+                          :flock-freq-react? true :flock-freq-speed 2.0 :flock-freq-deposit 2.5
+                          ;; audio-reactive
+                          :audio-amp 0.07 :audio-bands 10 :audio-dt-amp 0.32 :audio-emit-amp 1.4
+                          :audio-floor 0.06 :audio-lead-secs 0.06
+                          ;; PULSE SHAPES: a beat-synced geometric outline grows from the
+                          ;; centre (dominant freq picks square/rect/triangle/circle), then
+                          ;; the flow-stir sweeps it into the currents. :freq => it morphs
+                          ;; with the music. See emit-pulse!/stamp-shape-outline!.
+                          :pulse? true :pulse-bloom 0.5
+                          :pulse-amount 1.0 :pulse-shape :freq :pulse-color [0.6 0.95 1.0]
+                          :pulse-line-width 2 :pulse-rotate 0.02
+                          :pulse-shape-size 80 :pulse-shape-min 4 :pulse-shape-steps 5
+                          :pulse-shape-every 4 :pulse-shape-edge-beats 12 :pulse-shape-rest-beats 24})]
+   ;; AUDIO-REACTIVE flock: per-band buckets surge/bloom on the beat (freq-react),
+   ;; with the river-style flow so the beat drives flowing coloured currents
+   [:boid-reactive (merge (theme-defaults :boids) reactive-base
+                          {:theme :boids :palette rgb3 :keep 0.90 :audio-floor 0.06
+                           :flock-dep-radius 1.0 :flock-deposit 0.45 :flock-flow 8.0
+                           :flock-flow-blend 0.4 :flock-cohere 0.4 :flock-wind 0.4
+                           :flock-freq-react? true :flock-freq-speed 2.0 :flock-freq-deposit 2.5
+                           :audio-bands 10 :audio-emit-amp 1.4
+                           ;; keep the look the FLOCK's — no centre pulse glow/agents,
+                           ;; just the whole-image bloom + beat dt kicks from reactive-base
+                           :pulse-amount 0.0 :pulse-agents? false :pulse-bloom 0.5})]
    [:puffs        (merge (theme-defaults :puffs)   {:theme :puffs   :palette [[1.0 1.0 1.0]]})]
    [:white-net    (merge (theme-defaults :network) {:theme :network :keep 0.99 :expos 1.4 :saturation 1.0 :palette nil})]
-   [:jets         {:theme :jets :keep 0.995 :expos 1.4 :saturation 1.0 :palette nil}]])
+   [:jets         {:theme :jets :keep 0.995 :expos 1.4 :saturation 1.0 :palette nil}]
+   ;; --- narrated contemplative essay: slime breathing with the SPOKEN voice ---
+   ;; built for smoke.narration mixes (TTS + low ambient drone). The :pulse?
+   ;; (vocal-band) engine blooms a warm glow + transient agent network on each
+   ;; spoken phrase; the bass drone sits below the :pulse-band so it doesn't
+   ;; trigger. Calm: long keep, gentle dt, icy ethereal palette.
+   [:narration (merge (theme-defaults :slime) reactive-base
+                      {:theme :slime :keep 0.97 :saturation 3.0
+                       :audio-palette-set :ice
+                       :audio-floor 0.10 :audio-amp 0.05
+                       :audio-emit-amp 0.6 :audio-dt-amp 0.10
+                       :pulse-amount 0.12 :pulse-radius 7.0 :pulse-bloom 0.4
+                       :pulse-thresh 0.10 :pulse-band-lo 0.15 :pulse-band-hi 0.60
+                       :pulse-contrast 0.5
+                       :pulse-agents? true :pulse-agent-count 70 :pulse-agent-life 80
+                       :pulse-color [1.0 0.92 0.7]})]])
 
 (defn preset-params
   "The params override map for a named preset (nil if unknown)."
@@ -264,6 +419,12 @@
    :pulse-rotate     0.0 ; shape rotation (rad/frame); 0 = no spin
    :pulse-rect-aspect 1.7 ; how much :rect is wider than tall
    :pulse-line-width 2   ; outline thickness (cells) of the shape
+   ;; :pulse-shape :cycle => a NEW shape every beat (triangle->square->circle->rect...),
+   ;; instead of holding/growing one shape over several beats.
+   :pulse-shape-once? false ; deposit the shape ONCE per swap => it becomes smoke and drifts off
+                          ; (vs continuous per-frame emission while the shape holds)
+   :pulse-shape-overlay? false ; draw the shape CRISP on the final image (fixed colour + position,
+                          ; no wind drift / audio recolour) instead of depositing it into the smoke
    :pulse-random? false  ; place the pulse glow at a random cell each frame (scattered shimmer)
    :pulse-ring   0.0     ; expanding RING impulse on each vocal onset (0 => off)
    :pulse-bloom  0.0     ; whole-image exposure BLOOM ∝ pulse score (0 => off; the scene breathes)
@@ -306,10 +467,38 @@
    :p-flow        12.0   ; TARGET flow speed (cells/tick) :flow agents drive the fluid toward
    :p-flow-blend  0.4    ; blend rate toward that target; BOUNDS u/v so the flow can't blow up
    :p-flow-paint  0.0    ; :flow agents also paint WHITE this much => visible white network (0 => invisible)
+   :p-antagonist  0.0    ; ANTAGONISTIC colours: deposit erodes RIVAL colour channels at the cell
+                         ; (colours eat into each other => sharp territorial fronts). 0 => off.
+   :p-antagonist-sense 0.0 ; agents are REPELLED by rival colours (steer away from foreign trails),
+                         ; attracted to their own => active segregation. 0 => ordinary own-colour sensing.
    :p-rand-color? false  ; colour agents from a freshly generated random vivid palette (ignores :palette);
                          ; a new colour set is rolled on each field rebuild ('r'). Re-seed to apply.
    :p-rand-colors 6      ; how many random hues in that palette (=> that many coherent colour networks)
-   :boids         nil})  ;; boids config (:sources mode); nil => boids/default-boid
+   :boids         nil    ;; boids config (:sources mode); nil => boids/default-boid
+   ;; --- flock of small balls (:boids theme, smoke.flock) -----------------------
+   :flock-count     320  ; number of balls in the flock
+   :flock-radius    14.0 ; perception radius (cells): neighbours within steer it
+   :flock-sep-dist  6.0  ; closer than this => separation pushes balls apart
+   :flock-sep       1.5  ; separation weight
+   :flock-align     0.75 ; alignment weight (match neighbours' velocity)
+   :flock-cohere    0.55 ; cohesion weight (toward neighbours' centre)
+   :flock-accel     0.5  ; hard cap on |steering| per frame (keeps the flock from diverging)
+   :flock-max-speed 2.2  ; speed clamp (cells/frame)
+   :flock-min-speed 0.6  ; balls never stall below this (the flock keeps flowing)
+   :flock-damp      0.96 ; velocity damping per frame
+   :flock-wind      0.5  ; how much the fluid velocity drags the balls
+   :flock-deposit   0.45 ; colour deposited into the smoke per ball per frame
+   :flock-dep-radius 1.8 ; deposit footprint (cells): <=1 => point/filaments, big => haze
+   :flock-flow      0.0  ; >0 => balls stir the fluid toward their heading => flowing RIVERS
+   :flock-flow-blend 0.35 ; blend rate of that stir (bounds the velocity => stable)
+   :flock-draw?     true ; draw the balls themselves on top of the smoke
+   :flock-ball-r    3    ; ball radius (output px)
+   :flock-ball-bright 1.2 ; ball brightness (its colour, lerped toward a white core)
+   :flock-with-phys? false ; :boid-slime — also step the physarum slime layer (mode :flock), so
+                         ; slime networks grow UNDER the flock and both deposit into the same smoke
+   :flock-freq-react? false ; split the flock into one bucket per freq band (audio look)
+   :flock-freq-speed 0.0 ; band gain -> bucket MAX SPEED: maxs ×(1 + this × gain)
+   :flock-freq-deposit 0.0}) ; band gain -> bucket DEPOSIT: deposit ×(1 + this × gain)
 
 (defn theme [p] (get themes (:theme p) (:jets themes)))
 (defn mode  [p] (:mode (theme p)))
@@ -326,6 +515,9 @@
 (defonce recolor-pending? (atom false)) ; smoke.audio sets this on a colour-cycle beat; advance recolours the agents
 (defonce beat-count (atom 0))   ; running detected-beat counter mirrored from smoke.audio (drives shape growth)
 (defonce ^:private pulse-cyc (atom {:gstep -1 :shape :circle :ang 0.0 :rot 0.0})) ; beat-stepped growing-shape state
+(defonce pulse-shape-draw (atom nil)) ; when :pulse-shape-overlay?, emit-pulse! parks the current shape
+                                      ; spec here and render-pixels! draws it CRISP on the final image
+                                      ; (fixed colour + position, immune to wind advection / audio keep)
 (def pulse-bright-colors        ; bright pulse-source colours flipped to on the colour-cycle beat
   [[1.0 1.0 1.0] [1.0 0.85 0.4] [1.0 0.35 0.35] [0.35 1.0 0.45] [0.35 0.6 1.0]
    [1.0 0.95 0.35] [1.0 0.45 1.0] [0.4 1.0 1.0] [1.0 0.6 0.2]])
@@ -467,6 +659,7 @@
   (reset! stars [])
   (reset! pulse-agents []) (reset! pulse-prev 0.0) (reset! recolor-pending? false)
   (reset! pulse-cyc {:gstep -1 :shape :circle :ang 0.0 :rot 0.0}) (reset! pulse-color-cur nil)
+  (reset! pulse-shape-draw nil)
   (let [n   (grid-n p)
         ;; :p-rand-color? => a freshly generated random vivid palette (new set each
         ;; rebuild, i.e. each 'r'); else audio's hue palette / the theme's own.
@@ -481,7 +674,12 @@
               (:audio-puffs? p)  (or (:palette p) (:palette (theme p)) [[1.0 1.0 1.0]])
               :else (or @audio-palette (:palette p) (:palette (theme p)) [[1.0 1.0 1.0]]))]
     (assoc (f/make-fluid n)
-           :phys (phys/make n (:p-count p) pal))))
+           :phys (phys/make n (:p-count p) pal)
+           ;; the :boids theme runs a flock of small balls instead of physarum;
+           ;; it deposits its OWN colour, so give it the coloured palette (rgb3 etc.)
+           :flock (when (= (mode p) :flock)
+                    (flock/make n (long (:flock-count p 320))
+                                (or @audio-palette (when (seq (:palette p)) (:palette p)) rgb3))))))
 
 (defn emit-puffs!
   "Drain and stamp any pending beat puffs into the fluid. Each puff (from
@@ -534,7 +732,8 @@
         amt (double amt) cr (double cr) cg (double cg) cb (double cb)
         hl (* 0.5 lw)
         ca (Math/cos ang) sa (Math/sin ang)
-        hw (* r aspect) hh r                          ; box half-extents (:rect widens x)
+        ;; box half-extents: :square is equal-sided; :rect is VERTICAL (taller than wide)
+        hw r hh (if (= shape :rect) (* r aspect) r)
         ext (long (Math/ceil (+ lw (Math/sqrt (+ (* hw hw) (* hh hh))))))  ; safe bounding box
         rin (- r hl) rout (+ r hl) r2in (* rin rin) r2out (* rout rout)
         ;; triangle edge normals (3), line at inradius = r/2 from centre, rotated by ang
@@ -589,11 +788,14 @@
         cr (double (nth col 0)) cg (double (nth col 1)) cb (double (nth col 2))
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
         ci (quot n 2) cj (quot n 2)]
+    (reset! pulse-shape-draw nil)   ; cleared each frame; set below only in overlay mode
     ;; (1) continuous glow in pulse-colour (radius small => point source). With
     ;; :pulse-random? the point jumps to a fresh random cell each frame (scattered
     ;; pulse shimmer) instead of sitting at the centre.
     (when (pos? (double (:pulse-amount p 0.0)))
       (let [shape (:pulse-shape p :point)
+            overlay? (boolean (:pulse-shape-overlay? p))  ; draw crisp on final image, not into smoke
+            once? (boolean (:pulse-shape-once? p))         ; deposit ONCE per new shape => it BECOMES smoke and drifts
             gi (if (:pulse-random? p) (long (rand n)) ci)
             gj (if (:pulse-random? p) (long (rand n)) cj)]
         (if (= shape :point)
@@ -613,66 +815,91 @@
                       (aset dr k (float (+ (aget dr k) (* g cr))))
                       (aset dg k (float (+ (aget dg k) (* g cg))))
                       (aset db k (float (+ (aget db k) (* g cb))))))))))
-          ;; geometric SHAPE outline, beat-synced: a cycle = GROW (steps × every
-          ;; beats, jumping one size step that STAYS every :pulse-shape-every beats)
-          ;; then a REST of :pulse-shape-rest-beats beats with NO shape, then a
-          ;; fresh shape. The dominant FREQ band picks the shape; rotation applies
-          ;; ONLY to triangles (bass third => spin one way, treble => the other).
-          (let [cyc   @pulse-cyc
-                every (long (max 1 (:pulse-shape-every p 4)))
-                edge  (long (max 1 (:pulse-shape-edge-beats p 16)))
-                steps (long (max 1 (:pulse-shape-steps p 5)))
-                rest  (long (max 0 (:pulse-shape-rest-beats p 16)))
-                ;; per-step dwell: edge beats for the smallest & largest, every for middle
-                step-dur (fn [s] (if (or (zero? s) (= s (dec steps))) edge every))
-                grow  (reduce + (map step-dur (range steps)))
-                cycle (max 1 (+ grow rest))
-                rmin0 (double (:pulse-shape-min p 3))
-                rmax  (double (:pulse-shape-size p 90))
-                ;; drop the smallest size: begin one step above the configured
-                ;; min so the sequence starts at the old 2nd-smallest shape
-                rmin  (+ rmin0 (/ (- rmax rmin0) (double (max 1 (dec steps)))))
-                bc    (long @beat-count)
-                bphase (mod bc cycle)                  ; beat within the grow+rest cycle
-                new-beat? (not= bc (long (:last-bc cyc -1)))
-                wrap? (and new-beat? (zero? bphase))   ; start of a cycle => fresh shape
-                ;; which step is bphase in (or rest)? walk the per-step durations
-                gs    (loop [acc 0 i 0]
-                        (if (>= i steps) [false (dec steps)]
-                            (let [d (long (step-dur i))]
-                              (if (< bphase (+ acc d)) [true i] (recur (+ acc d) (inc i))))))
-                growing? (nth gs 0)
-                s     (long (nth gs 1))
-                ;; dominant-band fraction 0..1 (drives shape + triangle rotation on a wrap)
-                ^doubles gains @audio-gains
-                frac (if (and gains (pos? (alength gains)))
-                       (let [nn (alength gains)
-                             dom (loop [i 1 bi 0 bv (aget gains 0)]
-                                   (if (< i nn)
-                                     (if (> (aget gains i) bv) (recur (inc i) i (aget gains i)) (recur (inc i) bi bv))
-                                     bi))]
-                         (/ (double dom) (double (max 1 nn))))
-                       0.5)
-                fresh? (or wrap? (nil? (:shape cyc)))
-                shp  (if fresh?
-                       (if (= shape :freq)
-                         (nth [:square :rect :triangle :circle] (min 3 (long (* frac 4.0))))
-                         shape)
-                       (:shape cyc))
-                ;; rotation ONLY for triangles; direction from the freq band
-                rot  (if fresh?
-                       (if (= shp :triangle)
-                         (* (double (:pulse-rotate p 0.0)) (if (< frac 0.5) -1.0 1.0))
-                         0.0)
-                       (double (:rot cyc 0.0)))
-                r    (+ rmin (* (- rmax rmin) (/ (double s) (double (max 1 (dec steps))))))
-                ang  (+ (double (:ang cyc 0.0)) rot)
-                lw   (double (:pulse-line-width p 2))
-                amt  (double (:pulse-amount p 1.0))
-                aspect (double (:pulse-rect-aspect p 1.7))]
-            (reset! pulse-cyc {:last-bc bc :shape shp :ang ang :rot rot})
-            (when growing?
-              (stamp-shape-outline! fl ci cj shp r aspect lw ang amt cr cg cb))))))
+          ;; :cycle => SWAP the shape (triangle -> square -> circle -> rect -> ...)
+          ;; every :pulse-shape-every BEATS, at a CONSTANT size (:pulse-shape-size).
+          ;; With :pulse-shape-once? the shape is deposited ONCE per swap so it BECOMES
+          ;; smoke and drifts off; otherwise it emits smoke continuously while it holds.
+          (if (= shape :cycle)
+            (let [cyc   @pulse-cyc
+                  bc    (long @beat-count)
+                  every (long (max 1 (:pulse-shape-every p 4)))   ; beats each shape holds before swapping
+                  sidx  (quot bc every)                           ; which shape we're on
+                  new-shape? (not= sidx (long (:sidx cyc -1)))    ; a swap just happened this beat
+                  shapes [:triangle :square :circle :rect]
+                  shp   (nth shapes (mod sidx (count shapes)))
+                  r     (double (:pulse-shape-size p 60))          ; CONSTANT size (no growing)
+                  ;; rotate ONLY triangles; keep square/rect axis-aligned (upright)
+                  ang   (if (= shp :triangle) (* (double (:pulse-rotate p 0.0)) (double sidx)) 0.0)
+                  lw    (double (:pulse-line-width p 2))
+                  amt   (* (double (:pulse-amount p 1.0)) (if once? 8.0 1.0))
+                  aspect (double (:pulse-rect-aspect p 1.7))]
+              (reset! pulse-cyc {:last-bc bc :sidx sidx :shape shp :ang ang})
+              (if overlay?
+                (reset! pulse-shape-draw {:shape shp :ci ci :cj cj :r r :aspect aspect :lw lw :ang ang :color [cr cg cb]})
+                (when (or (not once?) new-shape?)
+                  (stamp-shape-outline! fl ci cj shp r aspect lw ang amt cr cg cb))))
+            ;; geometric SHAPE outline, beat-synced: a cycle = GROW (steps × every
+            ;; beats, jumping one size step that STAYS every :pulse-shape-every beats)
+            ;; then a REST of :pulse-shape-rest-beats beats with NO shape, then a
+            ;; fresh shape. The dominant FREQ band picks the shape; rotation applies
+            ;; ONLY to triangles (bass third => spin one way, treble => the other).
+            (let [cyc   @pulse-cyc
+                  every (long (max 1 (:pulse-shape-every p 4)))
+                  edge  (long (max 1 (:pulse-shape-edge-beats p 16)))
+                  steps (long (max 1 (:pulse-shape-steps p 5)))
+                  rest  (long (max 0 (:pulse-shape-rest-beats p 16)))
+                  ;; per-step dwell: edge beats for the smallest & largest, every for middle
+                  step-dur (fn [s] (if (or (zero? s) (= s (dec steps))) edge every))
+                  grow  (reduce + (map step-dur (range steps)))
+                  cycle (max 1 (+ grow rest))
+                  rmin0 (double (:pulse-shape-min p 3))
+                  rmax  (double (:pulse-shape-size p 90))
+                  ;; drop the smallest size: begin one step above the configured
+                  ;; min so the sequence starts at the old 2nd-smallest shape
+                  rmin  (+ rmin0 (/ (- rmax rmin0) (double (max 1 (dec steps)))))
+                  bc    (long @beat-count)
+                  bphase (mod bc cycle)                  ; beat within the grow+rest cycle
+                  new-beat? (not= bc (long (:last-bc cyc -1)))
+                  wrap? (and new-beat? (zero? bphase))   ; start of a cycle => fresh shape
+                  ;; which step is bphase in (or rest)? walk the per-step durations
+                  gs    (loop [acc 0 i 0]
+                          (if (>= i steps) [false (dec steps)]
+                              (let [d (long (step-dur i))]
+                                (if (< bphase (+ acc d)) [true i] (recur (+ acc d) (inc i))))))
+                  growing? (nth gs 0)
+                  s     (long (nth gs 1))
+                  ;; dominant-band fraction 0..1 (drives shape + triangle rotation on a wrap)
+                  ^doubles gains @audio-gains
+                  frac (if (and gains (pos? (alength gains)))
+                         (let [nn (alength gains)
+                               dom (loop [i 1 bi 0 bv (aget gains 0)]
+                                     (if (< i nn)
+                                       (if (> (aget gains i) bv) (recur (inc i) i (aget gains i)) (recur (inc i) bi bv))
+                                       bi))]
+                           (/ (double dom) (double (max 1 nn))))
+                         0.5)
+                  fresh? (or wrap? (nil? (:shape cyc)))
+                  shp  (if fresh?
+                         (if (= shape :freq)
+                           (nth [:square :rect :triangle :circle] (min 3 (long (* frac 4.0))))
+                           shape)
+                         (:shape cyc))
+                  ;; rotation ONLY for triangles; direction from the freq band
+                  rot  (if fresh?
+                         (if (= shp :triangle)
+                           (* (double (:pulse-rotate p 0.0)) (if (< frac 0.5) -1.0 1.0))
+                           0.0)
+                         (double (:rot cyc 0.0)))
+                  r    (+ rmin (* (- rmax rmin) (/ (double s) (double (max 1 (dec steps))))))
+                  ang  (+ (double (:ang cyc 0.0)) rot)
+                  lw   (double (:pulse-line-width p 2))
+                  amt  (double (:pulse-amount p 1.0))
+                  aspect (double (:pulse-rect-aspect p 1.7))]
+              (reset! pulse-cyc {:last-bc bc :shape shp :ang ang :rot rot})
+              (when growing?
+                (if overlay?
+                  (reset! pulse-shape-draw {:shape shp :ci ci :cj cj :r r :aspect aspect :lw lw :ang ang :color [cr cg cb]})
+                  (stamp-shape-outline! fl ci cj shp r aspect lw ang amt cr cg cb))))))))
     ;; (2)+(3) rising-edge onset => expanding ring + short-lived agent burst
     (let [pv (double @pulse-prev)]
       (when (and (> v thr) (<= pv thr))
@@ -736,6 +963,21 @@
       (when-let [pal @audio-palette]
         (when-let [ph (:phys fl)] (phys/recolor! ph pal))))
     (cond
+      ;; flock of small balls: they flock, ride the wind, and deposit their colour
+      ;; (and optionally stir the fluid for rivers). Runs AFTER vel-step so
+      ;; advect-colors! carries the colour along the freshly-injected currents.
+      (= m :flock)
+      (let [em (double (or @audio-emit 0.0))]
+        ;; :boid-slime — COMBINED: grow physarum slime networks UNDER the flock first
+        ;; (both deposit into the same smoke grid; the flock's flow-stir then drags the
+        ;; slime veins along the balls' currents, and the slime density feeds the balls).
+        (when (and (:flock-with-phys? p) (:phys fl))
+          (phys/step! (:phys fl) fl (assoc p :p-mode (:p-mode p :smoke)
+                                           :p-deposit (* (double (:p-deposit p)) (+ 1.0 em))
+                                           :audio-gains @audio-gains)))
+        (when-let [fk (:flock fl)]
+          (flock/step! fk fl (assoc p :flock-deposit (* (double (:flock-deposit p 0.45)) (+ 1.0 em))
+                                    :audio-gains @audio-gains))))
       ;; invisible flow network: agents stir the fluid (no colour) so the smoke
       ;; rides their traces. Runs AFTER vel-step so advect-colors! below carries
       ;; the colour along the freshly-injected currents. Works under any theme.
@@ -845,6 +1087,110 @@
                       (aset px ix (unchecked-int (bit-or (unchecked-int 0xFF000000)
                                                          (bit-shift-left nr 16) (bit-shift-left ng 8) nb))))))))))))))
 
+(defn- draw-balls!
+  "Draw the flock balls (:boids theme) as small additive colour discs on top of
+   the smoke, each with a brighter near-white core. Maps grid-cell coords to the
+   visible output px using the same cover-crop mapping as the smoke render."
+  [^ints px fl p]
+  (when-let [flk (:flock fl)]
+    (let [n (long (:n fl))
+          w (render-w p) h (render-h p) mx (max w h)
+          gscale (/ (double (dec n)) (double (dec mx)))
+          ipx  (/ 1.0 gscale)                               ; grid -> output px
+          offx (* 0.5 (- (double mx) (double w)))
+          offy (* 0.5 (- (double mx) (double h)))
+          ^floats xs (:xs flk) ^floats ys (:ys flk)
+          ^floats ar (:ar flk) ^floats ag (:ag flk) ^floats ab (:ab flk)
+          cnt (long (:count flk))
+          R (long (max 1 (long (:flock-ball-r p 3))))
+          bright (double (:flock-ball-bright p 1.2))]
+      (dotimes [i cnt]
+        (let [cx (long (- (* (double (aget xs i)) ipx) offx))
+              cy (long (- (* (double (aget ys i)) ipx) offy))
+              cr (* bright (double (aget ar i))) cg (* bright (double (aget ag i))) cb (* bright (double (aget ab i)))]
+          (when (and (>= cx (- R)) (< cx (+ w R)) (>= cy (- R)) (< cy (+ h R)))
+            (dotimes [dy (inc (* 2 R))]
+              (let [oy (- dy R) py (+ cy oy)]
+                (when (and (>= py 0) (< py h))
+                  (dotimes [dx (inc (* 2 R))]
+                    (let [ox (- dx R) pxx (+ cx ox) rr2 (+ (* ox ox) (* oy oy))]
+                      (when (and (<= rr2 (* R R)) (>= pxx 0) (< pxx w))
+                        (let [fall (- 1.0 (/ (Math/sqrt (double rr2)) (inc R)))
+                              ;; brighten the core toward white
+                              core (* fall fall)
+                              ri (long (* 255.0 (min 1.0 (+ (* cr fall) (* 0.6 core)))))
+                              gi (long (* 255.0 (min 1.0 (+ (* cg fall) (* 0.6 core)))))
+                              bi (long (* 255.0 (min 1.0 (+ (* cb fall) (* 0.6 core)))))
+                              ix (+ pxx (* py w)) old (aget px ix)
+                              nr (min 255 (+ ri (bit-and (bit-shift-right old 16) 0xFF)))
+                              ng (min 255 (+ gi (bit-and (bit-shift-right old 8) 0xFF)))
+                              nb (min 255 (+ bi (bit-and old 0xFF)))]
+                          (aset px ix (unchecked-int (bit-or (unchecked-int 0xFF000000)
+                                                             (bit-shift-left nr 16) (bit-shift-left ng 8) nb))))))))))))))))
+
+(defn- draw-pulse-shape!
+  "Draw the parked pulse shape (@pulse-shape-draw) CRISP onto the final image: a
+   fixed-colour outline that neither drifts with the wind nor gets recoloured by
+   the audio keep/saturation (the look you get by depositing it into the smoke).
+   Same outline geometry as stamp-shape-outline!, but in output-px space, additive."
+  [^ints px p]
+  (when-let [s @pulse-shape-draw]
+    (let [w (render-w p) h (render-h p)
+          n (grid-n p) mx (max w h)
+          gscale (/ (double (dec n)) (double (dec mx)))
+          ipx (/ 1.0 gscale)
+          offx (* 0.5 (- (double mx) (double w)))
+          offy (* 0.5 (- (double mx) (double h)))
+          shape (:shape s)
+          pcx (- (* (double (:ci s)) ipx) offx)
+          pcy (- (* (double (:cj s)) ipx) offy)
+          r   (* (double (:r s)) ipx)
+          aspect (double (:aspect s))
+          lw  (max 1.0 (* (double (:lw s)) ipx))
+          ang (double (:ang s))
+          col (:color s)
+          ri (long (* 255.0 (min 1.0 (double (nth col 0)))))
+          gi (long (* 255.0 (min 1.0 (double (nth col 1)))))
+          bi (long (* 255.0 (min 1.0 (double (nth col 2)))))
+          hl (* 0.5 lw)
+          ca (Math/cos ang) sa (Math/sin ang)
+          hw r hh (if (= shape :rect) (* r aspect) r)   ; :rect VERTICAL, :square equal-sided
+          ext (long (Math/ceil (+ lw (Math/sqrt (+ (* hw hw) (* hh hh))))))
+          rin (- r hl) rout (+ r hl) r2in (* rin rin) r2out (* rout rout)
+          a0 (+ ang (/ (* 5.0 Math/PI) 6.0)) a1 (+ a0 2.0943951) a2 (+ a1 2.0943951)
+          n0c (Math/cos a0) n0s (Math/sin a0) n1c (Math/cos a1) n1s (Math/sin a1)
+          n2c (Math/cos a2) n2s (Math/sin a2) toff (* 0.5 r)
+          cxi (long (Math/round pcx)) cyi (long (Math/round pcy))]
+      (loop [oj (- ext)]
+        (when (<= oj ext)
+          (let [py (+ cyi oj)]
+            (when (and (>= py 0) (< py h))
+              (loop [oi (- ext)]
+                (when (<= oi ext)
+                  (let [pxx (+ cxi oi)]
+                    (when (and (>= pxx 0) (< pxx w))
+                      (let [x (double oi) y (double oj)
+                            on? (case shape
+                                  :circle (let [d2 (+ (* x x) (* y y))] (and (>= d2 r2in) (<= d2 r2out)))
+                                  :triangle (let [d0 (- (+ (* x n0c) (* y n0s)) toff)
+                                                  d1 (- (+ (* x n1c) (* y n1s)) toff)
+                                                  d2 (- (+ (* x n2c) (* y n2s)) toff)
+                                                  m  (max d0 (max d1 d2))]
+                                              (<= (if (neg? m) (- m) m) hl))
+                                  (let [lx (+ (* x ca) (* y sa)) ly (+ (* (- x) sa) (* y ca))
+                                        axx (if (neg? lx) (- lx) lx) ayy (if (neg? ly) (- ly) ly)]
+                                    (and (<= axx (+ hw hl)) (<= ayy (+ hh hl))
+                                         (or (>= axx (- hw hl)) (>= ayy (- hh hl))))))]
+                        (when on?
+                          (let [ix (+ pxx (* py w)) old (aget px ix)
+                                nr (min 255 (+ ri (bit-and (bit-shift-right old 16) 0xFF)))
+                                ng (min 255 (+ gi (bit-and (bit-shift-right old 8) 0xFF)))
+                                nb (min 255 (+ bi (bit-and old 0xFF)))]
+                            (aset px ix (unchecked-int (bit-or (unchecked-int 0xFF000000)
+                                                               (bit-shift-left nr 16) (bit-shift-left ng 8) nb))))))))
+                  (recur (inc oi))))))
+          (recur (inc oj)))))))
+
 (defn render-pixels!
   "Composite the three tonemapped colour channels; in :network mode also add the
    white trail; optionally stamp twinkling stars at high-density peaks."
@@ -912,4 +1258,6 @@
                    (unchecked-int (bit-or (unchecked-int 0xFF000000)
                                           (bit-shift-left ri 16) (bit-shift-left gi 8) bi))))))))
     (when (:stars p) (draw-stars! px p (double @frame)))
+    (when (:flock-draw? p) (draw-balls! px fl p))
+    (when @pulse-shape-draw (draw-pulse-shape! px p))
     px))

@@ -11,3 +11,11 @@
 *.mp4
 /.insta.edn
 /media/
+
+# Instagram auth cookie jar exported by yt-dlp (sensitive)
+/ig_cookies.txt
+
+# TTS narration: piper binary, voice models, generated audio (too large for git)
+/tools/piper/
+/assets/voices/
+/assets/narration/
