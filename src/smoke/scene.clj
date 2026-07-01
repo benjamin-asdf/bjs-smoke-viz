@@ -192,7 +192,9 @@
    :sepia  [[0.18 0.12 0.08] [0.35 0.22 0.12] [0.55 0.38 0.2] [0.72 0.55 0.32] [0.85 0.72 0.5] [0.95 0.9 0.78]]
    :pastel [[0.95 0.7 0.75] [0.98 0.85 0.7] [0.95 0.95 0.75] [0.75 0.9 0.8] [0.75 0.85 0.95] [0.85 0.78 0.95]]
    :candy  [[0.95 0.4 0.6] [1.0 0.6 0.5] [0.8 0.4 0.8] [0.5 0.5 0.9] [0.4 0.8 0.85] [0.95 0.8 0.4]]
-   :autumn [[0.3 0.1 0.05] [0.6 0.2 0.08] [0.85 0.4 0.12] [0.9 0.6 0.2] [0.7 0.65 0.25] [0.5 0.55 0.2]]})
+   :autumn [[0.3 0.1 0.05] [0.6 0.2 0.08] [0.85 0.4 0.12] [0.9 0.6 0.2] [0.7 0.65 0.25] [0.5 0.55 0.2]]
+   ;; cyan-dominant with a few purple accents (matches the posted ring-swirl look)
+   :cyan-purple [[0.15 0.85 1.0] [0.1 0.7 0.95] [0.3 0.9 1.0] [0.15 0.6 1.0] [0.55 0.25 0.95] [0.7 0.35 0.9]]})
 
 ;; reactive base for the pure-physarum looks: makes slime/rivers actually move to
 ;; audio (freq-react agents + pulse + energy emission). Mood-locked => colour-cycle
@@ -204,6 +206,33 @@
    :p-freq-react? true :p-freq-speed 3.0 :p-freq-deposit 2.5 :audio-bands 10
    :audio-amp 0.07 :audio-dt-amp 0.32 :audio-emit-amp 1.6 :audio-floor 0.02
    :audio-lead-secs 0.06 :audio-color-cycle 0})
+
+;; the hand-tuned CYBER-FLOCK base (slime + reactive flock), shared by the
+;; :cyber-flock preset and its reel variant.
+(def cyber-flock-params
+  (merge (theme-defaults :boid-slime)
+         {:theme :boid-slime :palette rgb3
+          :keep 0.9 :dt 0.0325 :visc 0.069 :buoy 0.25 :expos 0.95
+          :saturation 6.0 :wind 1.5 :noise-scale 1.1594
+          ;; physarum slime under the flock
+          :flock-with-phys? true :p-mode :smoke
+          :p-count 2500 :p-sensor 21.54 :p-speed 1.1 :p-deposit 1.0
+          :p-wind 0.5 :p-bright 0.856
+          :p-freq-react? true :p-freq-speed 3.0 :p-freq-deposit 2.5
+          ;; the flock of balls on top
+          :flock-count 260 :flock-cohere 0.5 :flock-wind 0.6
+          :flock-deposit 0.4 :flock-dep-radius 1.2 :flock-flow 6.0
+          :flock-flow-blend 0.4 :flock-ball-bright 1.3
+          :flock-freq-react? true :flock-freq-speed 2.0 :flock-freq-deposit 2.5
+          ;; audio-reactive
+          :audio-amp 0.07 :audio-bands 10 :audio-dt-amp 0.32 :audio-emit-amp 1.4
+          :audio-floor 0.06 :audio-lead-secs 0.06
+          ;; PULSE SHAPES (dominant freq picks the shape, morphs with the music)
+          :pulse? true :pulse-bloom 0.5
+          :pulse-amount 1.0 :pulse-shape :freq :pulse-color [0.6 0.95 1.0]
+          :pulse-line-width 2 :pulse-rotate 0.02
+          :pulse-shape-size 80 :pulse-shape-min 4 :pulse-shape-steps 5
+          :pulse-shape-every 4 :pulse-shape-edge-beats 12 :pulse-shape-rest-beats 24}))
 
 ;; named full-look presets (theme + params) for the controls "preset" dropdown.
 ;; :galaxy-slime is the saved hero look (vivid slime, denser keep).
@@ -267,32 +296,23 @@
    ;; CYBER-FLOCK — hand-tuned combined look (slime + reactive flock), captured live
    ;; 2026-07-01: high viscosity + long sensor => broad glowing currents, saturation 6
    ;; for neon, keep 0.9 so it stays crisp (no smear). Audio-reactive.
-   [:cyber-flock  (merge (theme-defaults :boid-slime)
-                         {:theme :boid-slime :palette rgb3
-                          :keep 0.9 :dt 0.0325 :visc 0.069 :buoy 0.25 :expos 0.95
-                          :saturation 6.0 :wind 1.5 :noise-scale 1.1594
-                          ;; physarum slime under the flock
-                          :flock-with-phys? true :p-mode :smoke
-                          :p-count 2500 :p-sensor 21.54 :p-speed 1.1 :p-deposit 1.0
-                          :p-wind 0.5 :p-bright 0.856
-                          :p-freq-react? true :p-freq-speed 3.0 :p-freq-deposit 2.5
-                          ;; the flock of balls on top
-                          :flock-count 260 :flock-cohere 0.5 :flock-wind 0.6
-                          :flock-deposit 0.4 :flock-dep-radius 1.2 :flock-flow 6.0
-                          :flock-flow-blend 0.4 :flock-ball-bright 1.3
-                          :flock-freq-react? true :flock-freq-speed 2.0 :flock-freq-deposit 2.5
-                          ;; audio-reactive
-                          :audio-amp 0.07 :audio-bands 10 :audio-dt-amp 0.32 :audio-emit-amp 1.4
-                          :audio-floor 0.06 :audio-lead-secs 0.06
-                          ;; PULSE SHAPES: a beat-synced geometric outline grows from the
-                          ;; centre (dominant freq picks square/rect/triangle/circle), then
-                          ;; the flow-stir sweeps it into the currents. :freq => it morphs
-                          ;; with the music. See emit-pulse!/stamp-shape-outline!.
-                          :pulse? true :pulse-bloom 0.5
-                          :pulse-amount 1.0 :pulse-shape :freq :pulse-color [0.6 0.95 1.0]
-                          :pulse-line-width 2 :pulse-rotate 0.02
-                          :pulse-shape-size 80 :pulse-shape-min 4 :pulse-shape-steps 5
-                          :pulse-shape-every 4 :pulse-shape-edge-beats 12 :pulse-shape-rest-beats 24})]
+   [:cyber-flock  cyber-flock-params]
+   ;; CYBER-FLOCK-REEL (2026-07-01) — hand-tuned for 9:16 reels: fast (dt 0.12) + dampfend
+   ;; (buoy 0.7) + bright network (expos 1.15, p-deposit 1.6) + keep 0.94 + fine detail
+   ;; (grid-n 640, low visc, more agents). The shape appears ONCE, late (~beat 50), as a
+   ;; swapping cycle held for a 4-beat window. Freq drives keep (audio-amp 0.16) and boid
+   ;; speed (flock-freq-speed 4.0). NOTE: render reels with :warmup 400 so the frame opens
+   ;; fully built (warmup is a render! kwarg, not a param):
+   ;;   (v/reel! out :audio wav :preset :cyber-flock-reel :warmup 400)
+   [:cyber-flock-reel (merge cyber-flock-params
+                             {:dt 0.12 :buoy 0.7 :keep 0.94 :expos 1.15
+                              :visc 0.045 :p-deposit 1.6 :p-count 3500 :flock-count 150
+                              :grid-n 640
+                              :audio-amp 0.16 :flock-freq-speed 4.0
+                              ;; shape: one swapping cycle, appears once late, for 4 beats
+                              :pulse-shape :cycle :pulse-shape-overlay? false :pulse-shape-once? false
+                              :pulse-shape-every 4 :pulse-shape-beats 4 :pulse-shape-start-beats 50
+                              :pulse-shape-size 90 :pulse-amount 2.5 :pulse-line-width 4})]
    ;; AUDIO-REACTIVE flock: per-band buckets surge/bloom on the beat (freq-react),
    ;; with the river-style flow so the beat drives flowing coloured currents
    [:boid-reactive (merge (theme-defaults :boids) reactive-base
@@ -342,6 +362,12 @@
    :visc        0.0001   ; spectral viscosity (exp(-|k|^2 dt visc)); higher = smoother
    :buoy        0.4      ; buoyancy (rise speed), force per unit total density
    :keep        0.98     ; density kept per frame (<1 => soft fade); higher = denser/more persistent
+   ;; keep-ramp (audio mode): base keep grows :keep-start -> :keep-end linearly over
+   ;; :keep-ramp-secs of elapsed time => smoke fades fast early, thickens as it plays.
+   ;; nil start/end (default) => no ramp, use the scalar :keep above. See smoke.audio/modulate!.
+   :keep-start  nil      ; keep at t=0 (e.g. 0.85 = fast fade / sparse start)
+   :keep-end    nil      ; keep at t=:keep-ramp-secs onward (e.g. 0.985 = dense / persistent)
+   :keep-ramp-secs 0.0   ; seconds over which keep ramps start->end (0 => off)
    :edge-margin 1        ; sponge-border width (cells); fades flow at edges (walls)
    :blur-passes 0        ; render-only density blur (0 = crisp)
    :expos       0.9      ; tonemap exposure per colour channel (lower = keeps colour, less white-out)
@@ -406,6 +432,19 @@
    :pulse-agent-deposit 0.5 ; bright deposit per agent (fades as it ages)
    :pulse-agent-speed 1.3
    :pulse-color  [1.0 0.85 0.4] ; colour of the pulse agents/ring (warm gold; NOT white)
+   ;; freq-driven pulse colour: hue GLIDES with the audio spectral centroid (see emit-pulse!).
+   :pulse-color-freq? false ; true => shape/pulse hue moves with the frequency (low warm -> high cool)
+   :pulse-color-hue-base 0.0 ; hue (0..1) the lowest centroid maps to
+   :pulse-color-hue-span 1.0 ; hue range covered as centroid goes 0..1 (1.0 = full wheel)
+   :pulse-color-sat 1.0  ; saturation of the freq-driven hue
+   :pulse-color-smooth 1.0 ; temporal low-pass on the freq hue: 1.0 = instant, small = slow glide
+   :pulse-shape-audio-amp 0.0 ; >0 => the shape's smoke deposit swells with audio energy (0 = constant)
+   :pulse-shape-on-onset? false ; true => the shape only appears on a vocal ONSET beat, then fades
+   :pulse-shape-onset-burst 8.0 ; deposit multiplier for the onset burst (only when :pulse-shape-on-onset?)
+   :pulse-shape-cooldown-beats 0 ; min detected beats between onset-fires (0 = every onset; higher = spaced out)
+   ;; the shape injects fluid velocity along its outline => it pushes the smoke AND the boids
+   :pulse-shape-push 0.0 ; radial speed along the outline: out (>0) / in (<0)
+   :pulse-shape-swirl 0.0 ; tangential speed along the outline: boids orbit the shape
    :pulse-shape  :point  ; pulse source shape: :point (soft gaussian, pulse-driven) | :circle |
                           ; :square | :rect | :triangle | :freq (dominant band picks the shape).
                           ; Non-point shapes draw only the OUTLINE, stepped a bit larger EVERY
@@ -421,6 +460,9 @@
    :pulse-line-width 2   ; outline thickness (cells) of the shape
    ;; :pulse-shape :cycle => a NEW shape every beat (triangle->square->circle->rect...),
    ;; instead of holding/growing one shape over several beats.
+   :pulse-shape-start-beats 0 ; shapes only start appearing after this many detected beats (0 = from the start)
+   :pulse-shape-beats 0  ; length (beats) of the shape window; 0 = open-ended. With :pulse-shape-every>=this
+                         ; => the shape appears ONCE for that many beats then never again
    :pulse-shape-once? false ; deposit the shape ONCE per swap => it becomes smoke and drifts off
                           ; (vs continuous per-frame emission while the shape holds)
    :pulse-shape-overlay? false ; draw the shape CRISP on the final image (fixed colour + position,
@@ -428,11 +470,23 @@
    :pulse-random? false  ; place the pulse glow at a random cell each frame (scattered shimmer)
    :pulse-ring   0.0     ; expanding RING impulse on each vocal onset (0 => off)
    :pulse-bloom  0.0     ; whole-image exposure BLOOM ∝ pulse score (0 => off; the scene breathes)
+   ;; --- vocal ONSET bloom: unlike :pulse-bloom (driven by the vocal LEVEL, which
+   ;; stays high through sustained singing), this fires on the transient RISE of the
+   ;; vocal band => a flash on every syllable/attack, so hits POP (smoke.audio). ---
+   :voice-onset?      false ; run the vocal-onset detector (uses the :pulse-band-* window)
+   :voice-onset-thresh 0.05 ; min vocal-band rise (per frame) to count as an onset; LOWER => fires more
+   :voice-onset-rearm 0.015 ; the rise must fall below this before the next onset can fire (debounce)
+   :voice-decay       0.85  ; per-frame decay of the onset envelope (~1 = long afterglow, low = a quick flash)
+   :voice-bloom       0.0   ; whole-image exposure flash ∝ the onset envelope (0 => off)
    ;; --- audio palette MOOD: tone the generated vivid hues so it's not only neon ---
    :audio-sat    1.0     ; chroma of the audio palette: 1 = full neon, lower => muted/greyed
    :audio-lift   0.0     ; blend the palette toward WHITE: 0 = none, higher => pastel/washed
    :audio-palette-set nil ; a curated colour set from scene/audio-palettes (e.g. :sunset :ice :sepia),
                           ; or nil => freshly generated random vivid hues. Re-roll ('r') to apply.
+   ;; hue window for RANDOM palettes (only when :audio-palette-set is nil): random hues
+   ;; inside [base, base+span] => random variety within one family. nil span => full wheel.
+   :audio-hue-base nil   ; window start hue 0..1 (e.g. 0.3 = green)
+   :audio-hue-span nil   ; window width (e.g. 0.4 => green->blue). nil => full-wheel random
    :audio-color-cycle 0  ; re-roll the palette every Nth detected beat (0 = off); best in random mode
                           ; => the puffs AND slime network shift to a fresh colour set on the beat
    :audio-colors  7      ; # of random agent hues in audio mode (decoupled from band count, which
@@ -510,8 +564,11 @@
 (defonce audio-emit (atom nil)) ; emission (deposit) multiplier from loudness, set by smoke.audio; nil/0 => none
 (defonce audio-wind (atom nil)) ; wind-strength boost from beats/loudness, set by smoke.audio; nil/0 => steady wind
 (defonce audio-pulse (atom nil)) ; vocal-presence score (0..1) set by smoke.audio; drives the pulse effects
+(defonce audio-voice (atom nil)) ; vocal-ONSET envelope (0..1) set by smoke.audio; a transient spike on each
+                                 ; vocal attack that decays => drives the :voice-bloom flash
 (defonce pulse-agents (atom [])) ; short-lived slime agents spawned at vocal onsets {:x :y :h :life}
 (defonce ^:private pulse-prev (atom 0.0)) ; previous pulse score, for rising-edge onset detection
+(defonce pulse-onset-last (atom -1000000)) ; beat-count of the last onset-shape fire (cooldown); reset per render
 (defonce recolor-pending? (atom false)) ; smoke.audio sets this on a colour-cycle beat; advance recolours the agents
 (defonce beat-count (atom 0))   ; running detected-beat counter mirrored from smoke.audio (drives shape growth)
 (defonce ^:private pulse-cyc (atom {:gstep -1 :shape :circle :ang 0.0 :rot 0.0})) ; beat-stepped growing-shape state
@@ -522,6 +579,7 @@
   [[1.0 1.0 1.0] [1.0 0.85 0.4] [1.0 0.35 0.35] [0.35 1.0 0.45] [0.35 0.6 1.0]
    [1.0 0.95 0.35] [1.0 0.45 1.0] [0.4 1.0 1.0] [1.0 0.6 0.2]])
 (defonce pulse-color-cur (atom nil)) ; current random bright pulse colour (smoke.audio flips it); nil => :pulse-color
+(defonce pulse-freq-f (atom nil)) ; smoothed centroid fraction 0..1 for :pulse-color-freq? (temporal low-pass)
 (defonce audio-gains (atom nil)) ; per-band gains [g0 g1 ..] for :audio-white? mode (agents fade white->colour)
 (defonce audio-palette (atom nil)) ; generated vivid-hue palette set by smoke.audio ('r' re-rolls it); nil => theme palette
 (defonce audio-puffs (atom []))   ; pending beat-puff specs from smoke.audio; drained once per frame in `advance`
@@ -723,10 +781,16 @@
   "Draw the ROTATED OUTLINE (band of width `lw`) of `shape` centred at (ci,cj):
    :circle / :square / :rect / :triangle. `r` = radius / box half-size (circum-
    radius for the triangle); `aspect` widens :rect in x; `ang` rotates the shape.
-   Deposits `amt` of (cr cg cb). Clamped to the grid (no periodic wrap)."
-  [fl ci cj shape r aspect lw ang amt cr cg cb]
+   Deposits `amt` of (cr cg cb). Also injects FLUID velocity along the outline so
+   the shape pushes the smoke + boids: `push` = radial speed (out>0 / in<0),
+   `swirl` = tangential speed (orbit); blended in so it can't blow up.
+   Clamped to the grid (no periodic wrap)."
+  [fl ci cj shape r aspect lw ang amt cr cg cb push swirl]
   (let [n (long (:n fl))
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
+        ^floats fu (:u fl) ^floats fv (:v fl)
+        push (double push) swirl (double swirl)
+        flow? (or (not (zero? push)) (not (zero? swirl)))
         ci (long ci) cj (long cj)
         r (double r) aspect (double aspect) lw (double lw) ang (double ang)
         amt (double amt) cr (double cr) cg (double cg) cb (double cb)
@@ -765,7 +829,17 @@
                         (let [k (f/idx n ii jj)]
                           (aset dr k (float (+ (aget dr k) (* amt cr))))
                           (aset dg k (float (+ (aget dg k) (* amt cg))))
-                          (aset db k (float (+ (aget db k) (* amt cb)))))))))
+                          (aset db k (float (+ (aget db k) (* amt cb))))
+                          ;; push the fluid (=> boids ride it): radial + tangential from
+                          ;; the outline point, blended toward target so it stays bounded
+                          (when flow?
+                            (let [d (Math/sqrt (+ (* x x) (* y y)))]
+                              (when (> d 1.0e-4)
+                                (let [rx (/ x d) ry (/ y d)
+                                      tu (+ (* push rx) (* swirl (- ry)))
+                                      tv (+ (* push ry) (* swirl rx))]
+                                  (aset fu k (float (+ (aget fu k) (* 0.5 (- tu (aget fu k))))))
+                                  (aset fv k (float (+ (aget fv k) (* 0.5 (- tv (aget fv k)))))))))))))))
                 (recur (inc oi))))))
         (recur (inc oj))))))
 
@@ -783,8 +857,36 @@
   (let [v   (double (or @audio-pulse 0.0))
         thr (double (:pulse-thresh p 0.12))
         over (- v thr)
+        ;; vocal ONSET this frame = rising edge of the pulse score across thr
+        onset? (and (> v thr) (<= (double @pulse-prev) thr))
         n   (long (:n fl))
-        col (or @pulse-color-cur (:pulse-color p [1.0 0.85 0.4]))  ; random bright colour flips it
+        ;; :pulse-color-freq? => the pulse/shape hue GLIDES with the audio's spectral
+        ;; centroid (low freq => warm, high => cool), so the colour moves with the voice.
+        ;; Maps centroid 0..1 into a hue window [base, base+span] (default full wheel).
+        freq-col (when (:pulse-color-freq? p)
+                   (when-let [^doubles gains @audio-gains]
+                     (let [nn (alength gains)]
+                       (when (pos? nn)
+                         (let [sw  (areduce gains i s 0.0 (+ s (double (aget gains i))))
+                               cen (if (pos? sw)
+                                     (/ (areduce gains i s 0.0 (+ s (* (double i) (double (aget gains i))))) sw)
+                                     0.0)
+                               raw (min 1.0 (max 0.0 (/ cen (double (max 1 (dec nn))))))
+                               ;; temporal low-pass on the centroid fraction so the hue GLIDES
+                               ;; instead of flickering frame-to-frame. :pulse-color-smooth is the
+                               ;; per-frame blend toward the target: 1.0 = instant, small = slow.
+                               a   (double (:pulse-color-smooth p 1.0))
+                               prev @pulse-freq-f
+                               f   (if (and prev (< a 1.0)) (+ (double prev) (* a (- raw (double prev)))) raw)
+                               _   (reset! pulse-freq-f f)
+                               hue (+ (double (:pulse-color-hue-base p 0.0))
+                                      (* f (double (:pulse-color-hue-span p 1.0))))
+                               rgb (java.awt.Color/HSBtoRGB (float (mod hue 1.0))
+                                                            (float (:pulse-color-sat p 1.0)) 1.0)]
+                           [(/ (double (bit-and (bit-shift-right rgb 16) 0xff)) 255.0)
+                            (/ (double (bit-and (bit-shift-right rgb 8) 0xff)) 255.0)
+                            (/ (double (bit-and rgb 0xff)) 255.0)])))))
+        col (or freq-col @pulse-color-cur (:pulse-color p [1.0 0.85 0.4]))  ; freq-hue > cycle-flip > fixed
         cr (double (nth col 0)) cg (double (nth col 1)) cb (double (nth col 2))
         ^floats dr (:dr fl) ^floats dg (:dg fl) ^floats db (:db fl)
         ci (quot n 2) cj (quot n 2)]
@@ -796,8 +898,23 @@
       (let [shape (:pulse-shape p :point)
             overlay? (boolean (:pulse-shape-overlay? p))  ; draw crisp on final image, not into smoke
             once? (boolean (:pulse-shape-once? p))         ; deposit ONCE per new shape => it BECOMES smoke and drifts
+            ;; shapes active only in the beat WINDOW [start, start+beats): after
+            ;; :pulse-shape-start-beats and, if :pulse-shape-beats > 0, for that many
+            ;; beats then never again (0 => open-ended). With every>=beats => ONE shape.
+            later? (let [bc (long @beat-count)
+                         st (long (:pulse-shape-start-beats p 0))
+                         dur (long (:pulse-shape-beats p 0))]
+                     (and (>= bc st) (or (zero? dur) (< bc (+ st dur)))))
             gi (if (:pulse-random? p) (long (rand n)) ci)
-            gj (if (:pulse-random? p) (long (rand n)) cj)]
+            gj (if (:pulse-random? p) (long (rand n)) cj)
+            ;; :pulse-shape-audio-amp => the shape's smoke deposit SWELLS with the audio
+            ;; energy (mean band gain), so the circle pumps more smoke on loud/beaty bits.
+            amt-mul (let [k (double (:pulse-shape-audio-amp p 0.0))]
+                      (if (and (pos? k) @audio-gains)
+                        (let [^doubles g @audio-gains nn (alength g)
+                              en (if (pos? nn) (/ (areduce g i s 0.0 (+ s (double (aget g i)))) nn) 0.0)]
+                          (+ 1.0 (* k en)))
+                        1.0))]
         (if (= shape :point)
           ;; soft gaussian point — pulse-score driven (only when a pulse is present)
           (when (pos? over)
@@ -831,13 +948,15 @@
                   ;; rotate ONLY triangles; keep square/rect axis-aligned (upright)
                   ang   (if (= shp :triangle) (* (double (:pulse-rotate p 0.0)) (double sidx)) 0.0)
                   lw    (double (:pulse-line-width p 2))
-                  amt   (* (double (:pulse-amount p 1.0)) (if once? 8.0 1.0))
+                  amt   (* (double (:pulse-amount p 1.0)) amt-mul (if once? 8.0 1.0))
                   aspect (double (:pulse-rect-aspect p 1.7))]
               (reset! pulse-cyc {:last-bc bc :sidx sidx :shape shp :ang ang})
-              (if overlay?
-                (reset! pulse-shape-draw {:shape shp :ci ci :cj cj :r r :aspect aspect :lw lw :ang ang :color [cr cg cb]})
-                (when (or (not once?) new-shape?)
-                  (stamp-shape-outline! fl ci cj shp r aspect lw ang amt cr cg cb))))
+              (when later?
+                (if overlay?
+                  (reset! pulse-shape-draw {:shape shp :ci ci :cj cj :r r :aspect aspect :lw lw :ang ang :color [cr cg cb]})
+                  (when (or (not once?) new-shape?)
+                    (stamp-shape-outline! fl ci cj shp r aspect lw ang amt cr cg cb
+                                          (double (:pulse-shape-push p 0.0)) (double (:pulse-shape-swirl p 0.0)))))))
             ;; geometric SHAPE outline, beat-synced: a cycle = GROW (steps × every
             ;; beats, jumping one size step that STAYS every :pulse-shape-every beats)
             ;; then a REST of :pulse-shape-rest-beats beats with NO shape, then a
@@ -893,13 +1012,24 @@
                   r    (+ rmin (* (- rmax rmin) (/ (double s) (double (max 1 (dec steps))))))
                   ang  (+ (double (:ang cyc 0.0)) rot)
                   lw   (double (:pulse-line-width p 2))
-                  amt  (double (:pulse-amount p 1.0))
+                  ;; :pulse-shape-on-onset? => the shape only appears on a vocal ONSET
+                  ;; (then fades), stamped as a brighter burst so each onset blooms
+                  on-onset? (boolean (:pulse-shape-on-onset? p))
+                  ;; cooldown: after an onset fires the ring, ignore onsets for this
+                  ;; many detected beats => the pulses are spaced out, not machine-gun
+                  cool (long (:pulse-shape-cooldown-beats p 0))
+                  fire? (and onset? (>= (- bc (long @pulse-onset-last)) cool))
+                  amt  (* (double (:pulse-amount p 1.0)) amt-mul
+                          (if on-onset? (double (:pulse-shape-onset-burst p 8.0)) 1.0))
+                  push (double (:pulse-shape-push p 0.0))
+                  swirl (double (:pulse-shape-swirl p 0.0))
                   aspect (double (:pulse-rect-aspect p 1.7))]
               (reset! pulse-cyc {:last-bc bc :shape shp :ang ang :rot rot})
-              (when growing?
+              (when (and growing? later? (or (not on-onset?) fire?))
+                (when on-onset? (reset! pulse-onset-last bc))
                 (if overlay?
                   (reset! pulse-shape-draw {:shape shp :ci ci :cj cj :r r :aspect aspect :lw lw :ang ang :color [cr cg cb]})
-                  (stamp-shape-outline! fl ci cj shp r aspect lw ang amt cr cg cb))))))))
+                  (stamp-shape-outline! fl ci cj shp r aspect lw ang amt cr cg cb push swirl))))))))
     ;; (2)+(3) rising-edge onset => expanding ring + short-lived agent burst
     (let [pv (double @pulse-prev)]
       (when (and (> v thr) (<= pv thr))
@@ -1204,9 +1334,11 @@
         ^floats br (:br fl) ^floats bg (:bg fl) ^floats bb (:bb fl)
         ^floats trail (:trail (:phys fl))
         netw   (double (if (= (mode p) :trail) (:p-bright p) 0.0))
-        ;; :pulse-bloom => whole-image exposure pulse with the vocal-presence score
+        ;; :pulse-bloom => whole-image exposure pulse with the vocal-presence LEVEL;
+        ;; :voice-bloom => an extra transient flash on each vocal ONSET (attack)
         ^floats tl (tone-lut (* (double (:expos p))
-                                (+ 1.0 (* (double (:pulse-bloom p 0.0)) (double (or @audio-pulse 0.0))))))
+                                (+ 1.0 (* (double (:pulse-bloom p 0.0)) (double (or @audio-pulse 0.0)))
+                                   (* (double (:voice-bloom p 0.0)) (double (or @audio-voice 0.0))))))
         tscale (/ (double (dec TLUTN)) CHMAX)
         ;; saturation: amplify each pixel's chroma around its mean so the dominant
         ;; hue shows instead of washing to white. 1.0 = neutral; higher = vivid.

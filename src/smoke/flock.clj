@@ -249,11 +249,9 @@
     ;; (audio/start! "media/music/brejcha.wav")
     ;; (audio/start! "media/music/dave-dinger.wav")
     ;; (audio/start! "/home/benj/repos/musicanalysis/alle-warten.wav")
-    (audio/start! "/home/benj/repos/musicanalysis/d-neuland-vom-feisten-i-chaos.wav")
-    )
+    (audio/start! "/home/benj/repos/musicanalysis/d-neuland-vom-feisten-i-chaos.wav"))
 
-
-  ;; flock reacts: per-band buckets surge/bloom on beats
+;; flock reacts: per-band buckets surge/bloom on beats
 
   ;; tweak any knob live — applies next frame (no reload needed)
   (swap! core/params assoc :flock-ball-r 4 :flock-flow 6.0 :flock-count 400)
@@ -269,4 +267,67 @@
   ;; --- offline audio-reactive MP4 (separate clj process!) ---
   (require '[smoke.video :as v])
   (v/render! "/tmp/boids.mp4" :audio "media/music/brejcha.wav"
-             :preset :boid-reactive :render [1280 720]))
+             :preset :boid-reactive :render [1280 720])
+
+  ;; --- REEL: a persistent THICK smoke CIRCLE in the middle, cyber-flock around it ---
+  ;; The centre circle holds every frame (steps 1 + rest 0 => no grow/rest cycle) at a
+  ;; fixed radius; fat :pulse-line-width + :pulse-amount => a thick continuous smoke ring.
+  ;; The :cyber-flock preset supplies the neon slime+flock currents swirling around it.
+  ;;   thicker ring  => raise :pulse-line-width / :pulse-amount
+  ;;   bigger circle => raise :pulse-shape-size (radius, cells)
+  ;;   flip colours  => :audio-color-cycle 8 (else the ring stays the fixed :pulse-color)
+  (v/reel! "media/reels/ceciliaasoro-cyberflock-thickcircle.mp4"
+           :audio "media/music/ceciliaasoro.wav"
+           :seconds 13 :grid 512 :sharpen 0.5
+           :preset :cyber-flock
+           :params {:pulse-shape :circle
+                    :pulse-shape-steps 1        ;; single fixed size (no growing)
+                    :pulse-shape-rest-beats 0   ;; never rest => circle shows every frame
+                    :pulse-shape-edge-beats 16  ;; beats before a fresh (same) circle
+                    :pulse-shape-size 120       ;; circle radius (cells)
+                    :pulse-line-width 18        ;; THICK ring
+                    :pulse-amount 0.6           ;; continuous dense deposit
+                    :pulse-color [0.6 0.95 1.0] ;; cyan ring
+                    :audio-color-cycle 0        ;; stable colour (8 => flips)
+                    :keep 0.92})
+
+  ;; --- RING, blue/green ("die ist geil", Benni 2026-07-01) -------------------
+  ;; Thin open circle whose colour GLIDES with the audio frequency (spectral
+  ;; centroid, low-passed so it doesn't flicker), over a bright ocean-palette boid
+  ;; network. The circle's own smoke deposit swells with the audio energy.
+  ;;   :pulse-color-freq? + hue-base/span/smooth => freq-driven ring hue (green<->blue arc)
+  ;;   :pulse-shape-audio-amp => ring smoke pumps harder on loud/beaty bits
+  ;;   :audio-palette-set :ocean => blue/green network ; :p-bright 1.3 => bright net
+  ;; Saved: media/reels/ceciliaasoro-cyberflock-ring-bluegreen.mp4
+  (v/reel! "media/reels/ceciliaasoro-cyberflock-ring-bluegreen.mp4"
+           :audio "media/music/ceciliaasoro.wav"
+           :seconds 13 :grid 512 :sharpen 0.5
+           :preset :cyber-flock
+           :params {:pulse-shape :circle :pulse-shape-steps 1 :pulse-shape-rest-beats 0
+                    :pulse-shape-edge-beats 16 :pulse-shape-size 70 :pulse-line-width 9
+                    :pulse-amount 0.35 :pulse-shape-audio-amp 6.0   ;; ring smoke swells with energy
+                    :pulse-color-freq? true :pulse-color-hue-base 0.33 :pulse-color-hue-span 0.33
+                    :pulse-color-sat 1.0 :pulse-color-smooth 0.08   ;; freq hue, green<->blue, slow glide
+                    :audio-palette-set :ocean :audio-color-cycle 0  ;; blue/green network
+                    :flock-count 550 :flock-deposit 0.9 :p-bright 1.3 ;; more + brighter boid smoke
+                    :wind 0.5 :keep 0.96})
+
+  ;; --- RING + SWIRL — the KEEPER, POSTED ("swirl ist geil, das poste ich", Benni 2026-07-01)
+  ;; A glowing cyan ring that INJECTS fluid velocity along its outline (see
+  ;; stamp-shape-outline!): :pulse-shape-swirl spins the flock into a vortex around it
+  ;; and :pulse-shape-push shoves the smoke outward, carving a clean void inside.
+  ;;   negative :pulse-shape-push => pull smoke INWARD instead (vortex fills)
+  ;;   :pulse-shape-on-onset? + :pulse-shape-cooldown-beats => ring blooms per vocal onset
+  ;; DOUBLE length (26s, audio looped 2x via ceciliaasoro-x2.wav) so IG's 2nd loop has
+  ;; real video (short 13s reels froze on IG's replay). Palette LOCKED to :cyan-purple
+  ;; (cyan with a few purple) so the network matches the posted look, not random hues.
+  ;; Posted: media/reels/ceciliaasoro-cyberflock-ring-swirl.mp4
+  (v/reel! "media/reels/ceciliaasoro-cyberflock-ring-swirl.mp4"
+           :audio "media/music/ceciliaasoro-x2.wav" ;; 2x loop of ceciliaasoro.wav
+           :seconds 26 :grid 512 :sharpen 0.5
+           :preset :cyber-flock
+           :params {:pulse-shape :circle :pulse-shape-steps 1 :pulse-shape-rest-beats 0
+                    :pulse-shape-edge-beats 16 :pulse-shape-size 80 :pulse-line-width 10
+                    :pulse-amount 0.6 :pulse-color [0.6 0.95 1.0]
+                    :pulse-shape-swirl 2.5 :pulse-shape-push 0.5 ;; ring stirs the flock into a vortex
+                    :audio-palette-set :cyan-purple :audio-color-cycle 0 :keep 0.92}))

@@ -137,6 +137,59 @@
            :rate     rate
            :dur-secs (/ (double total) rate)})))))
 
+(defn sections
+  "Segment the analysis into contiguous LOUD / QUIET sections from its loudness
+   envelope (mean band gain per hop). The envelope is smoothed over `:smooth-secs`,
+   thresholded at `:thresh` × its median (so a track's own dynamics set the cut),
+   and runs shorter than `:min-secs` are merged into their neighbour — so you get a
+   handful of musical sections (verse / drop) rather than a per-frame flicker.
+   Returns [{:start :end :secs :loud? :energy} ...] with times in seconds — feed to
+   smoke.video/render! :arrange to auto-switch the look between quiet and loud parts."
+  [{:keys [hops hop-secs]} & {:keys [thresh min-secs smooth-secs]
+                              :or {thresh 1.0 min-secs 4.0 smooth-secs 1.5}}]
+  (let [hs   (double hop-secs)
+        n    (count hops)
+        ;; per-hop loudness = mean band gain
+        env  (double-array (map (fn [^doubles g]
+                                  (let [b (alength g)]
+                                    (if (pos? b) (/ (areduce g i s 0.0 (+ s (aget g i))) b) 0.0)))
+                                hops))
+        ;; box-smooth over ~smooth-secs so short dips don't split a section
+        w    (max 1 (long (/ (double smooth-secs) hs)))
+        sm   (double-array n)
+        _    (dotimes [i n]
+               (let [a (max 0 (- i w)) b (min n (+ i w 1))]
+                 (aset sm i (/ (loop [k a acc 0.0] (if (< k b) (recur (inc k) (+ acc (aget env k))) acc))
+                               (double (- b a))))))
+        med  (let [s (double-array sm)] (java.util.Arrays/sort s)
+                  (if (pos? n) (aget s (quot n 2)) 0.0))
+        cut  (* (double thresh) med)
+        min-hops (max 1 (long (/ (double min-secs) hs)))
+        ;; build raw runs of equal loud? then merge any run shorter than min-hops
+        runs (loop [i 1 s 0 loud? (> (aget sm 0) cut) out []]
+               (if (>= i n)
+                 (conj out [s n loud?])
+                 (let [l (> (aget sm i) cut)]
+                   (if (= l loud?) (recur (inc i) s loud? out)
+                       (recur (inc i) i l (conj out [s i loud?]))))))
+        merged (reduce (fn [acc [s e l]]
+                         (if (and (seq acc) (< (- e s) min-hops))
+                           (let [[ps _ pl] (peek acc)] (conj (pop acc) [ps e pl]))  ; absorb into previous
+                           (conj acc [s e l])))
+                       [] runs)
+        ;; absorbing a short run into its neighbour can leave two same-label runs
+        ;; touching (…quiet, blip→quiet, quiet…) — coalesce them into one section
+        merged (reduce (fn [acc [s e l]]
+                         (if (and (seq acc) (= l (nth (peek acc) 2)))
+                           (let [[ps _ pl] (peek acc)] (conj (pop acc) [ps e pl]))
+                           (conj acc [s e l])))
+                       [] merged)]
+    (mapv (fn [[s e l]]
+            {:start (* s hs) :end (* e hs) :secs (* (- e s) hs) :loud? l
+             :energy (/ (loop [k s acc 0.0] (if (< k e) (recur (inc k) (+ acc (aget sm k))) acc))
+                        (double (max 1 (- e s))))})
+          merged)))
+
 ;; ---- per-frame modulation --------------------------------------------------
 (defn- channel-keep
   "Per-channel keep [kr kg kb] from band `gains` and the active `palette`.
@@ -185,6 +238,9 @@
 (defonce ^:private beat-n (atom 0))   ; count of detected beats (for every-Nth accent)
 (defonce ^:private armed  (atom false)) ; true while inside a beat (debounces the onset trigger)
 (defonce ^:private puff-armed (atom false)) ; same debounce for the (lower) puff onset trigger
+(defonce ^:private voice-env  (atom 0.0))   ; decaying vocal-onset envelope (0..1) -> scene/audio-voice
+(defonce ^:private voice-prev (atom 0.0))   ; last frame's vocal-presence score (to detect the RISE)
+(defonce ^:private voice-armed (atom false)); debounce so one vocal attack fires one onset
 (defonce ^:private color-seed (atom 0)) ; RNG seed behind the current colour shuffle (re-rolled on 'r')
 
 (defn- base-palette [p]
@@ -209,6 +265,21 @@
                   c)))
         pal))
 
+(defn- windowed-vivid
+  "`nb` RANDOM vivid hues drawn INSIDE a hue window [base, base+span] (wraps at 1.0).
+   Unlike a curated gradient (fixed, uniform) this gives fresh random variety each
+   seed while staying in one colour family — e.g. base 0.3 span 0.4 => random
+   greens/teals/blues. Full saturation/value; tone-palette applies the mood after."
+  [^long seed ^long nb ^double base ^double span]
+  (let [rng (java.util.Random. seed)]
+    (mapv (fn [_]
+            (let [h   (mod (+ base (* span (.nextDouble rng))) 1.0)
+                  rgb (java.awt.Color/HSBtoRGB (float h) 1.0 1.0)]
+              [(/ (double (bit-and (bit-shift-right rgb 16) 0xff)) 255.0)
+               (/ (double (bit-and (bit-shift-right rgb 8) 0xff)) 255.0)
+               (/ (double (bit-and rgb 0xff)) 255.0)]))
+          (range (max 1 nb)))))
+
 (defn- reroll-colors!
   "Pick a fresh random seed and publish a new set of `nb` vivid hues into
    scene/audio-palette, toned by the :audio-sat / :audio-lift mood (so it's
@@ -220,8 +291,11 @@
   ([^long nb p]
    (let [seed (.nextLong (java.util.Random.))
          sat  (double (:audio-sat p 1.0)) lift (double (:audio-lift p 0.0))
-         ;; curated colour set if chosen, else freshly generated random vivid hues
+         ;; curated colour set if chosen; else if a hue window is given, RANDOM
+         ;; hues inside it (random variety within one family); else full-wheel random.
          base (or (get scene/audio-palettes (:audio-palette-set p))
+                  (when-let [span (:audio-hue-span p)]
+                    (windowed-vivid seed nb (double (:audio-hue-base p 0.0)) (double span)))
                   (vivid-palette seed nb))]
      (reset! color-seed seed)
      (reset! scene/audio-palette (tone-palette base sat lift))
@@ -475,7 +549,15 @@
               ;; quiet passages, and (1-floor) caps how much louder peaks add, so
               ;; density never collapses when soft nor balloons when loud.
             ef  (double (:audio-emit-floor p 0.0))
-            emit (* (double (:audio-emit-amp p)) (+ ef (* (- 1.0 ef) energy)))]
+            emit (* (double (:audio-emit-amp p)) (+ ef (* (- 1.0 ef) energy)))
+              ;; keep-ramp: base keep grows from :keep-start -> :keep-end linearly
+              ;; over :keep-ramp-secs of ELAPSED time, so the smoke fades fast early
+              ;; and accumulates (thickens) as the clip goes on. Off unless all set.
+            kbase (let [ks (:keep-start p) ke (:keep-end p) rs (double (:keep-ramp-secs p 0.0))]
+                    (if (and ks ke (pos? rs))
+                      (let [f (min 1.0 (max 0.0 (/ secs rs)))]
+                        (+ (double ks) (* f (- (double ke) (double ks)))))
+                      (double (:keep p))))]
         (reset! kick k)
         (cond
             ;; puffs mode: all reactivity is in the beat puffs (queued above); the
@@ -497,7 +579,7 @@
               (reset! scene/audio-emit emit))
             ;; default: per-channel keep colouring
           :else
-          (do (reset! scene/audio-keep (channel-keep gains pal (:keep p) (:audio-amp p) (:audio-floor p)))
+          (do (reset! scene/audio-keep (channel-keep gains pal kbase (:audio-amp p) (:audio-floor p)))
               (reset! scene/audio-gains nil)
               (reset! scene/audio-emit emit)))
         ;; expose the band gains regardless of mode, so :p-freq-react? buckets work
@@ -508,13 +590,29 @@
         (reset! scene/audio-wind (+ (* (double (:audio-wind-amp p 0.0)) k)
                                     (* (double (:audio-wind-energy p 0.0)) energy)))
           ;; heuristic vocal presence => white centre glow (scene/emit-pulse!)
-        (reset! scene/audio-pulse (when (:pulse? p) (pulse-score gains p))))
+        (reset! scene/audio-pulse (when (:pulse? p) (pulse-score gains p)))
+          ;; vocal ONSET: the transient RISE of the vocal-presence score (not its
+          ;; level) fires a decaying envelope, so each attack/syllable flashes even
+          ;; through sustained singing. Debounced so one attack => one onset.
+        (reset! scene/audio-voice
+                (when (:voice-onset? p)
+                  (let [vs   (pulse-score gains p)
+                        rise (max 0.0 (- vs (double @voice-prev)))
+                        thr  (double (:voice-onset-thresh p 0.05))
+                        trig (and (not @voice-armed) (> rise thr))]
+                    (when trig (reset! voice-armed true))
+                    (when (< rise (double (:voice-onset-rearm p 0.015))) (reset! voice-armed false))
+                    (reset! voice-prev vs)
+                    (reset! voice-env (max (* (double @voice-env) (double (:voice-decay p 0.85)))
+                                           (if trig (min 1.0 (/ rise thr)) 0.0)))))))
       (do (reset! scene/audio-keep nil)
           (reset! scene/audio-gains nil)
           (reset! scene/audio-dt nil)
           (reset! scene/audio-emit nil)
           (reset! scene/audio-wind nil)
           (reset! scene/audio-pulse nil)
+          (reset! scene/audio-voice nil)
+          (reset! voice-env 0.0) (reset! voice-prev 0.0) (reset! voice-armed false)
           (reset! kick 0.0)))))
 
 (defn- tick! []
@@ -531,10 +629,14 @@
   [analysis p]
   (reset! scene/audio-hook nil)
   (reset! kick 0.0) (reset! beat-n 0) (reset! armed false) (reset! puff-armed false) (reset! scene/beat-count 0)
+  (reset! voice-env 0.0) (reset! voice-prev 0.0) (reset! voice-armed false)
   (reset! scene/audio-puffs [])
   (reset! scene/audio-wind nil)
   (reset! scene/audio-pulse nil)
+  (reset! scene/audio-voice nil)
   (reset! scene/pulse-color-cur nil)
+  (reset! scene/pulse-freq-f nil)
+  (reset! scene/pulse-onset-last -1000000)
   (reroll-colors! (color-count p) p))
 
 (defn band-count
@@ -553,6 +655,7 @@
     (try (.destroy proc) (catch Throwable _)))
   (reset! state nil)
   (reset! kick 0.0) (reset! beat-n 0) (reset! armed false) (reset! puff-armed false) (reset! scene/beat-count 0)
+  (reset! voice-env 0.0) (reset! voice-prev 0.0) (reset! voice-armed false)
   (reset! scene/audio-puffs [])
   (reset! scene/audio-palette nil)  ; back to the theme's own palette
   (reset! scene/pulse-color-cur nil)
@@ -560,7 +663,8 @@
   (reset! scene/audio-dt nil)
   (reset! scene/audio-emit nil)
   (reset! scene/audio-wind nil)
-  (reset! scene/audio-pulse nil))
+  (reset! scene/audio-pulse nil)
+  (reset! scene/audio-voice nil))
 
 (defn start!
   "Analyse `path`, play it via an external player, and modulate per-colour keep
@@ -759,5 +863,14 @@
   (swap! smoke.core/params assoc :pulse-band-lo 0.4 :pulse-band-hi 0.9) ; pulse on higher freqs
 
   (swap! smoke.core/params assoc :pulse-thresh 0.20 :pulse-contrast 0.6 :pulse-band-lo 0.2 :pulse-band-hi 0.65)
+
+  ;; ── vocal ONSET bloom: the RISE of the vocal band (not its level) flashes the
+  ;;    whole image, so each sung attack pops even through sustained singing.
+  ;;    :voice-onset-thresh lower => fires on softer syllables; :voice-decay lower
+  ;;    => a quicker flash (higher => longer afterglow); :voice-bloom = flash size.
+  (swap! smoke.core/params assoc :voice-onset? true :voice-bloom 0.9 :voice-onset-thresh 0.05 :voice-decay 0.82)
+
+  ;; ── sections: segment a track into loud/quiet parts (feed to smoke.video :arrange) ──
+  (a/sections (a/analyze "media/music/brejcha.wav" :bands 10 :fps 60) :min-secs 8.0)
 
   (a/stop!))

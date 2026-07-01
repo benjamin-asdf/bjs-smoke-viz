@@ -76,6 +76,47 @@
         (cond-> (and audio (not tail?)) (into ["-shortest"]))
         (conj out-path))))
 
+;; ---------------------------------------------------------------------------
+;; :arrange — auto-switch the LOOK between the track's quiet and loud sections
+;; (haze in the verses, cyber in the drop). We detect sections offline from the
+;; loudness envelope, then per frame merge the section's param override onto the
+;; base preset, CROSSFADING numeric params across the boundary so it glides.
+;; Keep the :theme constant across overrides — a mid-render theme switch would
+;; need the agents/flock rebuilt; :arrange only morphs the numeric character.
+
+(defn- lerp-params
+  "Blend two effective param maps: shared NUMERIC keys interpolate by `t` (0->a,
+   1->b); anything else snaps to a below 0.5, b above."
+  [a b ^double t]
+  (reduce (fn [m k]
+            (let [va (get a k) vb (get b k)]
+              (assoc m k (if (and (number? va) (number? vb))
+                           (+ (double va) (* t (- (double vb) (double va))))
+                           (if (< t 0.5) va vb)))))
+          {} (distinct (concat (keys a) (keys b)))))
+
+(defn- section-idx ^long [sections ^double secs]
+  (or (first (keep-indexed (fn [i s] (when (and (>= secs (double (:start s)))
+                                                (< secs (double (:end s)))) i)) sections))
+      (dec (count sections))))
+
+(defn- arrange-p
+  "Effective params at `secs`: the base preset merged with the current section's
+   override (:loud or :quiet from `arrange`), crossfaded to the neighbour across a
+   `:fade`-second window centred on each boundary (0.5 blend exactly at the edge)."
+  [base sections arrange ^double secs]
+  (let [fade (double (:fade arrange 1.0)) half (* 0.5 fade)
+        pick (fn [sec] (merge base (get arrange (if (:loud? sec) :loud :quiet))))
+        idx  (section-idx sections secs)
+        cur  (nth sections idx)
+        ds   (- secs (double (:start cur))) de (- (double (:end cur)) secs)]
+    (cond
+      (and (pos? idx) (< ds half))
+      (lerp-params (pick (nth sections (dec idx))) (pick cur) (/ (+ ds half) fade))
+      (and (< (inc idx) (count sections)) (< de half))
+      (lerp-params (pick cur) (pick (nth sections (inc idx))) (/ (- half de) fade))
+      :else (pick cur))))
+
 (defn render!
   "Render an offline smoke video to `out-path` (MP4). Options:
      :audio    WAV/AIFF path — drives audio-reactive modulation AND is muxed in.
@@ -96,8 +137,15 @@
      :pad      [W H] — centre the rendered frame on a black W×H canvas at NATIVE
                  size (no scaling). Use with a square :render to put it on a 16:9
                  YouTube frame with black side-bars instead of cropping/stretching.
+     :arrange  {:loud <param-map> :quiet <param-map> :fade 1.0 :thresh 1.0 :min-secs 4.0}
+                 — auto-switch the LOOK between the track's loud and quiet sections
+                 (needs :audio). The sections are detected offline (audio/sections);
+                 each song frame merges its section's override onto the base preset,
+                 crossfading numeric params across :fade seconds at each boundary.
+                 Keep :theme the same in both overrides — this morphs the numeric
+                 character (flow/keep/saturation/colour-cycle…), not the structure.
    Returns {:out path :frames n :render [w h] :fps fps :seconds dur}."
-  [out-path & {:keys [audio fps seconds start-secs render grid preset params crf warmup tail-secs pad sharpen]
+  [out-path & {:keys [audio fps seconds start-secs render grid preset params crf warmup tail-secs pad sharpen arrange]
                :or   {fps 60 crf 18 warmup 90 start-secs 0 tail-secs 0}}]
   (let [fps (long fps) start (double start-secs)
         p   (cond-> scene/default-params
@@ -107,6 +155,11 @@
               grid   (assoc :grid-n (long grid))
               params (merge params))
         analysis (when audio (audio/analyze audio :bands (audio/band-count p) :fps fps))
+        ;; :arrange => precompute loud/quiet sections; each song frame morphs the
+        ;; base params toward the current section's override (crossfaded at edges)
+        sections (when (and arrange analysis)
+                   (audio/sections analysis :thresh (double (:thresh arrange 1.0))
+                                   :min-secs (double (:min-secs arrange 4.0))))
         dur (double (or seconds (when analysis (- (:dur-secs analysis) start)) 10))
         nframes (long (Math/round (* (double fps) dur)))
         tail-frames (long (Math/round (* (double fps) (double tail-secs))))
@@ -123,6 +176,12 @@
         t0  (System/nanoTime)]
     (println (format "rendering %d frames (%d song + %d silent tail) @ %dx%d %dfps (grid %d) -> %s"
                      total nframes tail-frames w h fps (scene/grid-n p) out-path))
+    (when sections
+      (println (format "  arrange: %d sections" (count sections)))
+      (doseq [s sections]
+        (println (format "    %5.1f-%5.1fs %-5s energy %.3f"
+                         (double (:start s)) (double (:end s))
+                         (if (:loud? s) "LOUD" "quiet") (double (:energy s))))))
     (when analysis (audio/offline-init! analysis p))
     (try
       (loop [fl (scene/new-fluid p) i (- (long warmup))]
@@ -147,17 +206,21 @@
                                 (reset! scene/audio-emit nil) (reset! scene/audio-gains nil)
                                 (reset! scene/audio-wind nil) (reset! scene/audio-pulse nil)
                                 (reset! scene/audio-puffs [])))
-            (scene/seed-sources! fl p)
-            (let [fl (scene/advance fl p)]
-              (scene/render-pixels! fl p px)
-              (pack-rgb24! px buf w h)
-              (.write os buf)
-              (when (zero? (rem i 60))
-                (println (format "  frame %d/%d (%.1fs)%s  %.1f fps render"
-                                 i total (/ (double i) fps)
-                                 (if (>= i nframes) " [tail]" "")
-                                 (if (pos? i) (/ (double i) (/ (- (System/nanoTime) t0) 1.0e9)) 0.0))))
-              (recur fl (inc i))))))
+            ;; per-frame params: base, or the section-morphed params when :arrange is on
+            (let [pf (if (and sections (< i nframes))
+                       (arrange-p p sections arrange (+ start (/ (double i) fps)))
+                       p)]
+              (scene/seed-sources! fl pf)
+              (let [fl (scene/advance fl pf)]
+                (scene/render-pixels! fl pf px)
+                (pack-rgb24! px buf w h)
+                (.write os buf)
+                (when (zero? (rem i 60))
+                  (println (format "  frame %d/%d (%.1fs)%s  %.1f fps render"
+                                   i total (/ (double i) fps)
+                                   (if (>= i nframes) " [tail]" "")
+                                   (if (pos? i) (/ (double i) (/ (- (System/nanoTime) t0) 1.0e9)) 0.0))))
+                (recur fl (inc i)))))))
       (finally
         (.close os)
         ;; don't leak this render's last audio modulation into a later live session
@@ -272,6 +335,71 @@
     result))
 
 ;; ---------------------------------------------------------------------------
+;; Quick GIF previews: render a short, low-res, no-audio clip of each preset and
+;; a labelled montage, so you pick a look at a glance instead of watching full
+;; renders. Fast by design: small grid + short + low fps. Needs ffmpeg (+ mpv
+;; only for playback elsewhere) and ImageMagick `montage` for the contact sheet.
+
+(defn- sh-ok!
+  "Run argv, printing + throwing with the captured stderr on a non-zero exit."
+  [& argv]
+  (let [r (apply sh/sh argv)]
+    (when-not (zero? (long (:exit r)))
+      (throw (ex-info (str (first argv) " failed") {:argv argv :err (:err r)})))
+    r))
+
+(defn preview-gif!
+  "Render a short, low-res, NO-audio looping GIF of one `preset` to `out` (.gif),
+   for quick look-picking. Renders a tiny square mp4 then palettegen->gif. Fast:
+   defaults to a 192-cell grid, 256px, 2s @ 20fps. Audio-reactive presets show
+   only their resting motion here (no beat) — enough to judge the look. Returns
+   `out`. Options match a subset of render! plus :size (gif px) and :params."
+  [preset out & {:keys [secs size fps grid warmup params]
+                 :or {secs 2.0 size 256 fps 20 grid 192 warmup 120}}]
+  (let [tmp (.getPath (File/createTempFile "smoke-preview" ".mp4"))]
+    (apply render! tmp (concat [:preset preset :seconds secs :fps fps :grid grid
+                                :warmup warmup :render [size size] :crf 20]
+                               (when params [:params params])))
+    ;; single-pass gif with a per-clip optimal palette (split -> palettegen/use)
+    (sh-ok! "ffmpeg" "-y" "-hide_banner" "-loglevel" "error" "-i" tmp
+            "-vf" (format "fps=%d,scale=%d:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
+                          (long fps) (long size))
+            "-loop" "0" out)
+    (.delete (File. tmp))
+    out))
+
+(defn contact-sheet!
+  "Render a quick preview GIF of each preset in `presets` (default: every preset
+   in scene/presets) into `dir`, then montage a labelled grid PNG (first frame of
+   each, captioned with the preset name) for at-a-glance picking. Watch the moving
+   look by opening the individual <preset>.gif files. Returns
+   {:gifs [[preset path]...] :sheet <png>}. Extra opts pass through to preview-gif!."
+  [& {:keys [presets dir cols] :or {dir "media/previews" cols 4} :as opts}]
+  (let [presets (or presets (mapv first scene/presets))
+        pgopts  (mapcat identity (dissoc opts :presets :dir :cols))]
+    (.mkdirs (File. ^String dir))
+    (let [gifs (mapv (fn [preset]
+                       (let [g (str dir "/" (name preset) ".gif")]
+                         (println "preview:" preset "->" g)
+                         (apply preview-gif! preset g pgopts)
+                         [preset g]))
+                     presets)
+          ;; grab frame 0 of each gif as a labelled PNG tile, then montage
+          tiles (mapv (fn [[preset g]]
+                        (let [png (str dir "/." (name preset) ".tile.png")]
+                          (sh-ok! "convert" (str g "[0]") png)
+                          [preset png]))
+                      gifs)
+          sheet (str dir "/CONTACT-SHEET.png")]
+      (apply sh-ok! (concat ["montage"]
+                            (mapcat (fn [[preset png]] ["-label" (name preset) png]) tiles)
+                            ["-tile" (str cols "x") "-geometry" "+6+6"
+                             "-background" "black" "-fill" "white" "-pointsize" "16" sheet]))
+      (doseq [[_ png] tiles] (.delete (File. ^String png)))
+      (println "contact sheet:" sheet)
+      {:gifs gifs :sheet sheet})))
+
+;; ---------------------------------------------------------------------------
 ;; Manifest + reach analysis: aggregate the per-reel sidecars, and once the
 ;; :insta metrics are filled in (after posting), rank what gets reach so we tune.
 
@@ -336,4 +464,22 @@
   ;; vertical Insta reel, audio-reactive, 12 s of a track:
   (v/reel! "reels/brejcha-slime.mp4" :audio "music/brejcha.wav" :preset :galaxy-slime)
   ;; silent seamless boomerang loop:
-  (v/reel! "reels/loop.mp4" :preset :swarm :seconds 6 :boomerang true))
+  (v/reel! "reels/loop.mp4" :preset :swarm :seconds 6 :boomerang true)
+
+  ;; ── :arrange — verse haze -> drop cyber (auto-switch look by loudness) ──
+  ;; inspect the detected sections first (tune :thresh / :min-secs):
+  (audio/sections (audio/analyze "media/music/brejcha.wav" :bands 10 :fps 60) :min-secs 6.0)
+  (v/render! "/tmp/arranged.mp4" :audio "media/music/brejcha.wav" :preset :boid-slime-reactive
+             :arrange {:quiet {:saturation 2.2 :flock-flow 0.0 :keep 0.97 :audio-color-cycle 0}
+                       :loud  {:saturation 4.5 :flock-flow 8.0 :keep 0.90 :audio-color-cycle 8}
+                       :fade 2.0 :min-secs 8.0})
+
+  ;; ── vocal-ONSET bloom — a flash on each sung attack (needs vocals) ──
+  (v/reel! "reels/cecilia-voice.mp4" :audio "media/music/ceciliaasoro.wav" :preset :galaxy-slime
+           :params {:voice-onset? true :voice-onset-thresh 0.05 :voice-decay 0.82 :voice-bloom 0.9
+                    :pulse-band-lo 0.15 :pulse-band-hi 0.6})
+
+  ;; ── quick-GIF previews — pick a look at a glance, then watch the .gif ──
+  (v/preview-gif! :cyber-flock "media/previews/cyber-flock.gif")
+  (v/contact-sheet!)                                   ; every preset -> media/previews/CONTACT-SHEET.png
+  (v/contact-sheet! :presets [:galaxy-slime :boid-rivers :cyber-flock :frost] :cols 2))
